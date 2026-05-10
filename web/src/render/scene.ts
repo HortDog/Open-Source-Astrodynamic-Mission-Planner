@@ -9,8 +9,12 @@ export type Renderer = {
   setSceneScale(metersPerUnit: number): void;
   /** Draw a wireframe sphere at the origin (radius in meters). */
   setCentralBody(radiusMeters: number): void;
-  /** Trajectory positions in meters, length = 3 * N (XYZ contiguous). */
-  drawTrajectory(positions: Float32Array<ArrayBuffer>): void;
+  /** Trajectory positions in meters, length = 3 * N (XYZ contiguous).
+   *  Optional per-vertex RGB colors (length = 3 * N) for phase highlighting. */
+  drawTrajectory(
+    positions: Float32Array<ArrayBuffer>,
+    colors?: Float32Array<ArrayBuffer>,
+  ): void;
   resize(): void;
 };
 
@@ -261,16 +265,25 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     requestAnimationFrame(frame);
   }
 
-  function drawTrajectory(positions: Float32Array<ArrayBuffer>): void {
+  function drawTrajectory(
+    positions: Float32Array<ArrayBuffer>,
+    colors?: Float32Array<ArrayBuffer>,
+  ): void {
     const n = positions.length / 3;
     const interleaved = new Float32Array(n * 6);
     for (let i = 0; i < n; i++) {
       interleaved[i * 6 + 0] = positions[i * 3 + 0] ?? 0;
       interleaved[i * 6 + 1] = positions[i * 3 + 1] ?? 0;
       interleaved[i * 6 + 2] = positions[i * 3 + 2] ?? 0;
-      interleaved[i * 6 + 3] = TRAJECTORY_COLOR[0];
-      interleaved[i * 6 + 4] = TRAJECTORY_COLOR[1];
-      interleaved[i * 6 + 5] = TRAJECTORY_COLOR[2];
+      if (colors) {
+        interleaved[i * 6 + 3] = colors[i * 3 + 0] ?? TRAJECTORY_COLOR[0];
+        interleaved[i * 6 + 4] = colors[i * 3 + 1] ?? TRAJECTORY_COLOR[1];
+        interleaved[i * 6 + 5] = colors[i * 3 + 2] ?? TRAJECTORY_COLOR[2];
+      } else {
+        interleaved[i * 6 + 3] = TRAJECTORY_COLOR[0];
+        interleaved[i * 6 + 4] = TRAJECTORY_COLOR[1];
+        interleaved[i * 6 + 5] = TRAJECTORY_COLOR[2];
+      }
     }
     if (trajBuf) trajBuf.destroy();
     trajBuf = device.createBuffer({

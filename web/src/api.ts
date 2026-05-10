@@ -15,6 +15,8 @@ export async function propagate(req: {
   duration_s: number;
   steps?: number;
   mu?: number;
+  j2_enabled?: boolean;
+  body_radius?: number;
 }): Promise<PropagateResponse> {
   const r = await fetch("/api/propagate", {
     method: "POST",
@@ -22,6 +24,28 @@ export async function propagate(req: {
     body: JSON.stringify(req),
   });
   if (!r.ok) throw new Error(`propagate ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type LaunchResponse = {
+  t: number[];
+  states: number[][];
+  burnout_index: number;
+  circularization_index: number;
+  burnout_time_s: number;
+  circularization_dv_m_s: number;
+  final_apoapsis_km: number;
+  final_periapsis_km: number;
+  final_speed_m_s: number;
+};
+
+export async function runLaunch(): Promise<LaunchResponse> {
+  const r = await fetch("/api/launch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "null",
+  });
+  if (!r.ok) throw new Error(`launch ${r.status}: ${await r.text()}`);
   return r.json();
 }
 

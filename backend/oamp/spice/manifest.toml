@@ -1,0 +1,23 @@
+# SPICE kernel manifest for OAMP.
+#
+# Each entry must have `url`. `sha256` and `size` are optional — when present,
+# `fetch_kernels.py` verifies them; when absent, it downloads the file and
+# prints the computed hash so you can paste it back here. CI should fail if
+# any kernel lacks a pinned sha256.
+#
+# Defaults below are the minimal set for the MVP launch-to-orbit example.
+
+[[kernels]]
+name = "naif0012.tls"
+url = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls"
+purpose = "Leap-second kernel (LSK). Required for any UTC<->ET conversion."
+
+[[kernels]]
+name = "de440s.bsp"
+url = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp"
+purpose = "DE440 short SPK (1849-2150). Sun, planets, Moon barycenters."
+
+[[kernels]]
+name = "pck00011.tpc"
+url = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/pck/pck00011.tpc"
+purpose = "Generic planetary constants (radii, GM hints)."

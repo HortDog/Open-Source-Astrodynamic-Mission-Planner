@@ -10,12 +10,12 @@ platforms = ["win-64", "linux-64", "osx-arm64", "osx-64"]
 python = ">=3.11,<3.13"
 numpy = "*"
 scipy = "*"
-numba = "*"
 fastapi = "*"
 uvicorn = "*"
 websockets = "*"
 pydantic = ">=2"
 casadi = "*"
+httpx = "*"
 pytest = "*"
 ruff = "*"
 hatchling = "*"
@@ -23,6 +23,7 @@ hatchling = "*"
 [pypi-dependencies]
 oamp = { path = ".", editable = true }
 spiceypy = "*"
+msgpack = "*"
 
 [tasks]
 dev = "uvicorn oamp.api.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend"
@@ -30,9 +31,11 @@ test = "pytest -q backend/tests"
 lint = "ruff check backend"
 fmt = "ruff format backend"
 arch = "d2 docs/architecture.d2 docs/architecture.svg"
+kernels = "python -m oamp.spice.fetch_kernels"
 
-# JAX has no jaxlib conda-forge wheel on win-64; install via pypi so all
-# platforms resolve. Swap to a CUDA jaxlib for Linux+NVIDIA setups.
+# JAX is the chosen accelerator (Numba dropped — see README). No jaxlib
+# conda-forge wheel on win-64, so install via pypi for portability. Swap to a
+# CUDA jaxlib for Linux+NVIDIA setups.
 [feature.gpu.pypi-dependencies]
 jax = "*"
 jaxlib = "*"
