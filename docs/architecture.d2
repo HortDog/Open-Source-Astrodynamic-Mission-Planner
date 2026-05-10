@@ -1,0 +1,132 @@
+# Open Source Astrodynamic Mission Planning — System Architecture
+# Render: `pixi run arch`  (or)  `d2 docs/architecture.d2 docs/architecture.svg`
+
+direction: right
+
+title: |md
+  # OAMP — System Architecture
+  Hybrid Newtonian/PN/GR mission planner with WebGPU sandbox.
+| {near: top-center}
+
+user: User (Browser) {
+  shape: person
+}
+
+frontend: Vite + TypeScript Frontend {
+  shape: rectangle
+
+  ui: Sandbox UI {
+    shape: rectangle
+    explanation: |md
+      - mission scenario builder
+      - time scrubbing & playback
+      - maneuver editor
+    |
+  }
+
+  renderer: WebGPU Renderer {
+    wgsl: WGSL Pipelines
+    traj:  Trajectory Wireframes
+    vec:   Velocity / Thrust Vectors
+    fb:    WebGL2 Fallback (planned)
+  }
+
+  net: Transport {
+    rest:  REST Client
+    ws:    WebSocket Client
+  }
+
+  ui -> renderer
+  ui -> net
+}
+
+backend: FastAPI Backend (Python) {
+  shape: rectangle
+
+  api: REST API {
+    e_scenarios: /scenarios
+    e_propagate: /propagate
+    e_optimize:  /optimize
+    e_health:    /health
+  }
+
+  hub: WebSocket Hub {
+    explanation: "real-time state stream + maneuver edits"
+  }
+
+  sched: Job Scheduler & State Store
+  api  -> sched
+  hub  -> sched
+}
+
+engine: Dynamics Engine {
+  shape: rectangle
+
+  newton: Newtonian / PN Integrator {
+    explanation: |md
+      - DOP853 / symplectic
+      - J2..Jn, drag, SRP, third-body
+      - Numba/JAX hot loops
+    |
+  }
+
+  gr: GR Geodesic Integrator {
+    explanation: |md
+      - DSX / Brumberg–Kopejkin BCRS metric
+      - Christoffel symbols from cached field
+      - test-particle geodesics
+    |
+  }
+
+  thrust: Tetrad Thrust Model {
+    explanation: "non-geodesic 4-acceleration in local orthonormal frame"
+  }
+
+  dv: Δv / 4-velocity Boost
+  opt: Trajectory Optimizer (CasADi / JAX)
+
+  newton <-> gr: handoff (BCRS state)
+  thrust -> newton
+  thrust -> gr
+  dv     -> newton
+  dv     -> gr
+  opt    -> newton
+  opt    -> gr
+}
+
+workers: Heavy Compute Workers (Ray) {
+  shape: rectangle
+  gr_batch: Full-GR Crunch Mode
+  metric_build: Multi-body Metric Pre-bake
+}
+
+data: Data Layer {
+  shape: cylinder
+  spice:  SPICE Kernels (DE440+)
+  cache:  Pre-baked Metric Cache
+  store:  Scenario / Mission Store
+}
+
+ext: External Sources {
+  shape: cloud
+  naif:  NAIF (JPL) Kernels
+  tle:   Space-Track / Celestrak
+}
+
+# --- top-level wiring ---
+user -> frontend.ui
+
+frontend.net.rest -> backend.api: HTTPS / JSON
+frontend.net.ws   -> backend.hub: WSS (msgpack/JSON)
+
+backend.sched -> engine: integrate / optimize
+backend.sched -> workers: dispatch GR jobs
+workers.gr_batch -> backend.hub: progress + results
+
+engine -> data.spice: SpiceyPy lookups
+engine.gr -> data.cache
+workers.metric_build -> data.cache
+workers.metric_build -> data.spice
+
+ext.naif -> data.spice: ingest
+ext.tle  -> data.store: ingest

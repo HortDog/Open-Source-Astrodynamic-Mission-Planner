@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where pixi *)",
+      "Bash(where node *)",
+      "Bash(where d2 *)",
+      "Bash(pixi --version)"
+    ]
+  }
+}

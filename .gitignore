@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Pixi
+.pixi/
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local data
+data/kernels/*.bsp
+data/kernels/*.tpc
+data/kernels/*.tls
+data/cache/
+
+# D2 renders
+docs/*.svg
+docs/*.png
