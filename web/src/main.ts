@@ -18,6 +18,10 @@ const btnLaunch = document.getElementById("btn-launch") as HTMLButtonElement;
 const btnLeoJ2 = document.getElementById("btn-leo-j2") as HTMLButtonElement;
 const btnHohmann = document.getElementById("btn-hohmann") as HTMLButtonElement;
 const btnLambert = document.getElementById("btn-lambert") as HTMLButtonElement;
+const btnEditor = document.getElementById("btn-editor") as HTMLButtonElement;
+const editor = document.getElementById("editor") as HTMLElement;
+const scrub = document.getElementById("scrub") as HTMLInputElement;
+const scrubInfo = document.getElementById("scrub-info") as HTMLSpanElement;
 const allButtons = [btnLeo, btnLaunch, btnLeoJ2, btnHohmann, btnLambert];
 
 const setStatus = (s: string) => { status.textContent = s; };
@@ -38,6 +42,36 @@ function selectButton(active: HTMLButtonElement): void {
     b.setAttribute("aria-pressed", b === active ? "true" : "false");
   }
 }
+
+// --------------------------------------------------------------------------- //
+//  Scrubber: track the active trajectory so the slider can position the marker.
+// --------------------------------------------------------------------------- //
+
+type ActiveTrajectory = { t: number[]; states: number[][] };
+let activeTraj: ActiveTrajectory | null = null;
+let activeRenderer: Renderer | null = null;
+
+function setActiveTrajectory(t: number[], states: number[][]): void {
+  activeTraj = { t, states };
+  scrub.min = "0";
+  scrub.max = String(Math.max(0, states.length - 1));
+  scrub.value = "0";
+  updateScrubMarker(0);
+}
+
+function updateScrubMarker(idx: number): void {
+  if (!activeTraj || !activeRenderer) return;
+  const s = activeTraj.states[idx];
+  const t = activeTraj.t[idx];
+  if (!s || t === undefined) return;
+  activeRenderer.setMarker([s[0]!, s[1]!, s[2]!]);
+  const r = Math.hypot(s[0]!, s[1]!, s[2]!);
+  const v = Math.hypot(s[3]!, s[4]!, s[5]!);
+  scrubInfo.textContent =
+    `t=${t.toFixed(0)} s · |r|=${(r / 1000).toFixed(0)} km · |v|=${(v / 1000).toFixed(2)} km/s`;
+}
+
+scrub.addEventListener("input", () => updateScrubMarker(parseInt(scrub.value, 10)));
 
 function statesToPositions(states: number[][]): Float32Array<ArrayBuffer> {
   const out = new Float32Array(states.length * 3);
@@ -93,6 +127,7 @@ async function showLeo(renderer: Renderer, j2 = false): Promise<void> {
     body_radius: R_EARTH,
   });
   renderer.drawTrajectory(statesToPositions(data.states));
+  setActiveTrajectory(data.t, data.states);
   setStatus(j2
     ? `LEO + J2: ${data.states.length} samples over ${(duration / 60).toFixed(0)} min — note nodal regression`
     : `LEO: ${data.states.length} samples over one period (${period.toFixed(0)} s)`);
@@ -118,6 +153,7 @@ async function showLaunch(renderer: Renderer): Promise<void> {
     colors[i * 3 + 2] = b;
   }
   renderer.drawTrajectory(positions, colors);
+  setActiveTrajectory(data.t, data.states);
   setStatus(
     `Launch demo: burnout T+${data.burnout_time_s.toFixed(0)}s, ` +
     `Δv_circ=${data.circularization_dv_m_s.toFixed(0)} m/s, ` +
@@ -167,6 +203,7 @@ async function showHohmann(renderer: Renderer): Promise<void> {
     [C_DEPART, C_TRANSFER, C_ARRIVE],
   );
   renderer.drawTrajectory(positions, colors);
+  setActiveTrajectory(data.t, data.states);
 
   setStatus(
     `Hohmann LEO(400 km)→GEO  ` +
@@ -269,6 +306,7 @@ async function showLambert(renderer: Renderer): Promise<void> {
     [C_DEPART, C_TRANSFER, C_ARRIVE],
   );
   renderer.drawTrajectory(positions, colors);
+  setActiveTrajectory(data.t, data.states);
 
   const dv1_mag = Math.hypot(dv1[0], dv1[1], dv1[2]);
   const dv2_mag = Math.hypot(dv2[0], dv2[1], dv2[2]);
@@ -281,8 +319,157 @@ async function showLambert(renderer: Renderer): Promise<void> {
   );
 }
 
+// --------------------------------------------------------------------------- //
+//  Maneuver editor — sidebar panel that lets the user set IC, add Δv kicks,
+//  and re-propagate the trajectory.
+// --------------------------------------------------------------------------- //
+
+type ManeuverRow = { t_offset_s: number; dv_r: number; dv_i: number; dv_c: number };
+
+const editorState: {
+  rx: number; ry: number; rz: number;
+  vx: number; vy: number; vz: number;
+  duration_s: number;
+  steps: number;
+  maneuvers: ManeuverRow[];
+} = {
+  rx: R0, ry: 0, rz: 0,
+  vx: 0, vy: Math.sqrt(MU_EARTH / R0), vz: 0,
+  duration_s: 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH),
+  steps: 400,
+  maneuvers: [],
+};
+
+function fillIc(): void {
+  (document.getElementById("ic-rx") as HTMLInputElement).value = String(editorState.rx);
+  (document.getElementById("ic-ry") as HTMLInputElement).value = String(editorState.ry);
+  (document.getElementById("ic-rz") as HTMLInputElement).value = String(editorState.rz);
+  (document.getElementById("ic-vx") as HTMLInputElement).value = String(editorState.vx);
+  (document.getElementById("ic-vy") as HTMLInputElement).value = String(editorState.vy);
+  (document.getElementById("ic-vz") as HTMLInputElement).value = String(editorState.vz);
+  (document.getElementById("ic-duration") as HTMLInputElement).value = editorState.duration_s.toFixed(0);
+  (document.getElementById("ic-steps") as HTMLInputElement).value = String(editorState.steps);
+}
+
+function readIc(): void {
+  const n = (id: string) => parseFloat((document.getElementById(id) as HTMLInputElement).value);
+  editorState.rx = n("ic-rx"); editorState.ry = n("ic-ry"); editorState.rz = n("ic-rz");
+  editorState.vx = n("ic-vx"); editorState.vy = n("ic-vy"); editorState.vz = n("ic-vz");
+  editorState.duration_s = n("ic-duration");
+  editorState.steps = parseInt((document.getElementById("ic-steps") as HTMLInputElement).value, 10);
+}
+
+function renderManeuverList(): void {
+  const list = document.getElementById("man-list")!;
+  list.innerHTML = "";
+  if (editorState.maneuvers.length === 0) {
+    list.innerHTML = '<div style="opacity:.6">no maneuvers — click "+ Add" to insert one</div>';
+    return;
+  }
+  editorState.maneuvers.forEach((m, idx) => {
+    const div = document.createElement("div");
+    div.className = "maneuver";
+    div.innerHTML = `
+      <div class="row" style="margin-bottom:3px">
+        <strong>#${idx + 1}</strong>
+        <label style="flex:1">t (s)
+          <input data-i="${idx}" data-k="t_offset_s" type="number" step="60" value="${m.t_offset_s}" />
+        </label>
+        <button data-rm="${idx}" class="danger">×</button>
+      </div>
+      <div class="vec3">
+        <input data-i="${idx}" data-k="dv_r" type="number" step="10" value="${m.dv_r}" placeholder="R" />
+        <input data-i="${idx}" data-k="dv_i" type="number" step="10" value="${m.dv_i}" placeholder="I" />
+        <input data-i="${idx}" data-k="dv_c" type="number" step="10" value="${m.dv_c}" placeholder="C" />
+      </div>
+    `;
+    list.appendChild(div);
+  });
+
+  // Wire up the per-row inputs.
+  list.querySelectorAll("input[data-i]").forEach((el) => {
+    el.addEventListener("input", () => {
+      const i = parseInt(el.getAttribute("data-i")!, 10);
+      const k = el.getAttribute("data-k") as keyof ManeuverRow;
+      const v = parseFloat((el as HTMLInputElement).value);
+      if (Number.isFinite(v)) editorState.maneuvers[i]![k] = v;
+    });
+  });
+  list.querySelectorAll("button[data-rm]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const i = parseInt(el.getAttribute("data-rm")!, 10);
+      editorState.maneuvers.splice(i, 1);
+      renderManeuverList();
+    });
+  });
+}
+
+async function applyEditor(renderer: Renderer): Promise<void> {
+  readIc();
+  setStatus("propagating editor scenario…");
+  const data = await propagate({
+    state: {
+      r: [editorState.rx, editorState.ry, editorState.rz],
+      v: [editorState.vx, editorState.vy, editorState.vz],
+    },
+    duration_s: editorState.duration_s,
+    steps: editorState.steps,
+    mu: MU_EARTH,
+    body_radius: R_EARTH,
+    maneuvers: editorState.maneuvers.map((m) => ({
+      t_offset_s: m.t_offset_s,
+      dv_ric: [m.dv_r, m.dv_i, m.dv_c],
+    })),
+  });
+
+  // Auto-scale the scene to fit the trajectory (max radius * 1.2).
+  let maxR = 0;
+  for (const s of data.states) {
+    const r = Math.hypot(s[0]!, s[1]!, s[2]!);
+    if (r > maxR) maxR = r;
+  }
+  renderer.setSceneScale(Math.max(R0, maxR * 1.2));
+  renderer.setCentralBody(R_EARTH);
+
+  // Phase colours by manoeuvre boundaries.
+  const phaseTimes = [0, ...editorState.maneuvers.map((m) => m.t_offset_s)];
+  const phaseColors = phaseTimes.map((_, i) => {
+    if (i === 0) return C_DEPART;
+    if (i === phaseTimes.length - 1) return C_ARRIVE;
+    return C_TRANSFER;
+  });
+  const colors = phaseColors.length > 1
+    ? colorByPhases(data.t, phaseTimes, phaseColors)
+    : undefined;
+  renderer.drawTrajectory(statesToPositions(data.states), colors);
+  setActiveTrajectory(data.t, data.states);
+
+  // Summary.
+  const totalDv = editorState.maneuvers
+    .reduce((s, m) => s + Math.hypot(m.dv_r, m.dv_i, m.dv_c), 0);
+  const summary = document.getElementById("editor-summary")!;
+  summary.innerHTML =
+    `samples: ${data.states.length}<br>` +
+    `peak |r|: ${(maxR / 1000).toFixed(0)} km<br>` +
+    `Σ |Δv|: ${(totalDv / 1000).toFixed(3)} km/s`;
+  setStatus(
+    `Editor: ${editorState.maneuvers.length} maneuver(s), Σ Δv=${(totalDv / 1000).toFixed(2)} km/s`,
+  );
+}
+
+function resetEditor(): void {
+  editorState.rx = R0; editorState.ry = 0; editorState.rz = 0;
+  editorState.vx = 0; editorState.vy = Math.sqrt(MU_EARTH / R0); editorState.vz = 0;
+  editorState.duration_s = 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH);
+  editorState.steps = 400;
+  editorState.maneuvers = [];
+  fillIc();
+  renderManeuverList();
+}
+
 async function main(): Promise<void> {
   const renderer = await initRenderer(canvas);
+  activeRenderer = renderer;
   if (renderer.kind !== "webgpu") {
     showBanner(
       "WebGPU is not available in this browser. " +
@@ -315,6 +502,28 @@ async function main(): Promise<void> {
   wire(btnLaunch,  () => showLaunch(renderer));
   wire(btnHohmann, () => showHohmann(renderer));
   wire(btnLambert, () => showLambert(renderer));
+
+  // Maneuver-editor toggle + initial population.
+  resetEditor();
+  btnEditor.addEventListener("click", () => {
+    editor.classList.toggle("show");
+    const visible = editor.classList.contains("show");
+    btnEditor.setAttribute("aria-pressed", visible ? "true" : "false");
+  });
+  (document.getElementById("btn-add-man") as HTMLButtonElement)
+    .addEventListener("click", () => {
+      const horizon = editorState.duration_s;
+      const last = editorState.maneuvers[editorState.maneuvers.length - 1];
+      const next_t = last ? Math.min(horizon * 0.99, last.t_offset_s + 600) : horizon * 0.25;
+      editorState.maneuvers.push({ t_offset_s: next_t, dv_r: 0, dv_i: 50, dv_c: 0 });
+      renderManeuverList();
+    });
+  (document.getElementById("btn-apply") as HTMLButtonElement)
+    .addEventListener("click", () => {
+      applyEditor(renderer).catch((e) => setStatus(`editor error: ${(e as Error).message}`));
+    });
+  (document.getElementById("btn-reset") as HTMLButtonElement)
+    .addEventListener("click", () => resetEditor());
 
   await showLeo(renderer, false);
 

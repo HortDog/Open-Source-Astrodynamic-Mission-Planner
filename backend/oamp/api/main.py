@@ -5,14 +5,17 @@ import json
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
+import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from oamp import __version__
 from oamp.bodies import EARTH, MOON, SUN
+from oamp.dynamics.integrators import propagate_symplectic
 from oamp.dynamics.launch import LaunchConfig, default_falcon9_like, simulate_launch
 from oamp.dynamics.newtonian import Maneuver, TwoBodyState, propagate_orbit
+from oamp.dynamics.optimization import optimize_multi_burn
 from oamp.dynamics.perturbations import (
     Vehicle,
     atmospheric_drag,
@@ -22,6 +25,7 @@ from oamp.dynamics.perturbations import (
     zonal_harmonics,
 )
 from oamp.dynamics.transfers import hohmann_transfer, lambert_universal
+from oamp.tle import fetch_celestrak, jd_from_iso_utc, propagate_tle, tle_state
 
 # --------------------------------------------------------------------------- #
 #  Request / response models
@@ -61,6 +65,9 @@ class PropagateRequest(BaseModel):
     vehicle: VehicleModel | None = None
     t0_tdb: float = 0.0
     maneuvers: list[ManeuverModel] = []
+    integrator: Literal["dop853", "verlet", "yoshida4"] = "dop853"
+    # Drag model: 'exponential' (default, no extra deps) or 'msis' (pymsis).
+    drag_model: Literal["exponential", "msis"] = "exponential"
 
 
 class HohmannRequest(BaseModel):
@@ -77,11 +84,32 @@ class LambertRequest(BaseModel):
     prograde: bool = True
 
 
+class MultiBurnRequest(BaseModel):
+    x0_r: tuple[float, float, float]
+    x0_v: tuple[float, float, float]
+    xf_r: tuple[float, float, float]
+    xf_v: tuple[float, float, float]
+    maneuver_epochs_s: list[float]
+    t_final_s: float = Field(gt=0)
+    mu: float = EARTH.mu
+    initial_dv_guess: list[tuple[float, float, float]] | None = None
+
+
 class SpiceStateRequest(BaseModel):
     target: str
     utc: str
     observer: str = "EARTH"
     frame: str = "J2000"
+
+
+class TleRequest(BaseModel):
+    """Submit a TLE directly (e.g. for an internal catalogue). For Celestrak
+    fetches use ``GET /tle?norad=...`` instead."""
+
+    line1: str
+    line2: str
+    name: str = ""
+    at_utc: str | None = None  # if supplied, propagate to this epoch
 
 
 # --------------------------------------------------------------------------- #
@@ -165,8 +193,19 @@ def _build_perturbation(req: PropagateRequest, body) -> tuple[object | None, lis
             )
         veh = Vehicle(**req.vehicle.model_dump())
         if req.drag:
-            perturbations.append(atmospheric_drag(veh, body=body))
-            active.append("drag_exponential")
+            if req.drag_model == "msis":
+                try:
+                    from oamp.dynamics.atmosphere import msis_density_fn
+
+                    perturbations.append(
+                        atmospheric_drag(veh, body=body, density_fn_full=msis_density_fn())
+                    )
+                    active.append("drag_msis")
+                except ImportError as e:
+                    raise HTTPException(status_code=503, detail=str(e)) from e
+            else:
+                perturbations.append(atmospheric_drag(veh, body=body))
+                active.append("drag_exponential")
         if req.srp:
             perturbations.append(solar_radiation_pressure(veh, body_radius_m=body.radius))
             active.append("srp_cannonball")
@@ -189,6 +228,20 @@ async def propagate(req: PropagateRequest) -> dict:
     perturbation, active = _build_perturbation(req, body)
     maneuvers = [Maneuver(**m.model_dump()) for m in req.maneuvers]
     try:
+        if req.integrator in ("verlet", "yoshida4"):
+            times, states = propagate_symplectic(
+                req.state,
+                req.duration_s,
+                req.steps,
+                body=body,
+                perturbation=perturbation,
+                j2_enabled=req.j2_enabled and perturbation is None,
+                maneuvers=maneuvers,
+                t0_tdb=req.t0_tdb,
+                method=req.integrator,
+            )
+            active.append(f"integrator_{req.integrator}")
+            return {"t": times.tolist(), "states": states.tolist(), "perturbations": active}
         times, states = propagate_orbit(
             req.state,
             req.duration_s,
@@ -255,6 +308,86 @@ async def optimize_lambert(req: LambertRequest) -> dict:
         "converged": res.converged,
         "transfer_time_s": res.transfer_time_s,
     }
+
+
+@app.post("/optimize/multi-burn")
+async def optimize_multi(req: MultiBurnRequest) -> dict:
+    try:
+        res = optimize_multi_burn(
+            x0_r=req.x0_r,
+            x0_v=req.x0_v,
+            xf_r=req.xf_r,
+            xf_v=req.xf_v,
+            maneuver_epochs_s=req.maneuver_epochs_s,
+            t_final_s=req.t_final_s,
+            mu=req.mu,
+            initial_dv_guess=req.initial_dv_guess,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"solver error: {e}") from e
+    return {
+        "dv_inertial_m_s": res.dv_inertial_m_s,
+        "total_dv_m_s": res.total_dv_m_s,
+        "converged": res.converged,
+        "iterations": res.iterations,
+        "final_state_m": res.final_state_m,
+        "final_velocity_m_s": res.final_velocity_m_s,
+    }
+
+
+# --------------------------------------------------------------------------- #
+#  TLE ingest
+# --------------------------------------------------------------------------- #
+
+
+def _tle_state_response(line1: str, line2: str, name: str, at_utc: str | None) -> dict:
+    from oamp.tle import parse_tle  # local import
+
+    sat = parse_tle(line1, line2, name)
+    if at_utc is None:
+        ts = tle_state(line1, line2, name=name)
+        jd_used = ts.epoch_jd
+        r = ts.r_m
+        v = ts.v_m_s
+    else:
+        jd, fr = jd_from_iso_utc(at_utc)
+        r, v, jd_used = propagate_tle(sat, jd, fr)
+    speed = (v[0] ** 2 + v[1] ** 2 + v[2] ** 2) ** 0.5
+    radius = (r[0] ** 2 + r[1] ** 2 + r[2] ** 2) ** 0.5
+    return {
+        "name": name,
+        "norad_id": int(sat.satnum),
+        "epoch_jd": jd_used,
+        "state": {"r": list(r), "v": list(v)},
+        "altitude_km": (radius - EARTH.radius) / 1000.0,
+        "speed_m_s": speed,
+    }
+
+
+@app.post("/tle/parse")
+async def tle_parse(req: TleRequest) -> dict:
+    """Parse a user-supplied TLE; optionally propagate to ``at_utc``."""
+    try:
+        return _tle_state_response(req.line1, req.line2, req.name, req.at_utc)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/tle/{norad}")
+async def tle_fetch(norad: int, at_utc: str | None = None) -> dict:
+    """Fetch the latest TLE for a NORAD catalogue number from Celestrak."""
+    try:
+        name, line1, line2 = fetch_celestrak(norad)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Celestrak fetch failed: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        return _tle_state_response(line1, line2, name, at_utc)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # --------------------------------------------------------------------------- #

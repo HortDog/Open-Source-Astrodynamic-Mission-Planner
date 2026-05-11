@@ -269,16 +269,30 @@ def atmospheric_drag(
     vehicle: Vehicle,
     body: Body = EARTH,
     density_fn: Callable[[float], float] | None = None,
+    density_fn_full: Callable[[float, np.ndarray], float] | None = None,
 ) -> Perturbation:
     """Drag against an atmosphere that co-rotates with the central body.
 
     a_drag = −½ ρ Cd A/m |v_rel| v_rel,   v_rel = v − ω × r
-    """
-    rho = density_fn or _exponential_density
 
-    def _accel(_t: float, r: np.ndarray, v: np.ndarray) -> np.ndarray:
+    Two density-function flavours are supported:
+
+    * ``density_fn(altitude_m) -> rho`` for altitude-only models (the default
+      exponential fit).
+    * ``density_fn_full(t_tdb, r_inertial) -> rho`` for models that depend on
+      epoch and geographic position — e.g. NRLMSISE / MSIS via
+      :func:`msis_density_fn`.
+
+    Only one of the two may be supplied.
+    """
+    if density_fn is not None and density_fn_full is not None:
+        raise ValueError("supply at most one of density_fn / density_fn_full")
+    rho_simple = density_fn or _exponential_density
+    rho_full = density_fn_full
+
+    def _accel(t: float, r: np.ndarray, v: np.ndarray) -> np.ndarray:
         altitude = float(np.linalg.norm(r)) - body.radius
-        d = rho(altitude)
+        d = rho_full(t, r) if rho_full is not None else rho_simple(altitude)
         if d == 0.0:
             return np.zeros(3)
         # Inertial → relative velocity via co-rotation: ω × r.

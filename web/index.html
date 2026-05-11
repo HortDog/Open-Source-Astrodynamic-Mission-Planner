@@ -22,7 +22,35 @@
       #banner { padding: 3px 8px; background: #3b1d10; color: #ffba94; border-bottom: 1px solid #5a2a18; display: none; }
       #banner.show { display: block; }
       canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
-      footer { padding: 3px 8px; border-top: 1px solid #1a3a1a; font-family: ui-monospace, monospace; font-size: 11px; }
+      footer { padding: 3px 8px; border-top: 1px solid #1a3a1a; font-family: ui-monospace, monospace; font-size: 11px;
+               display: flex; align-items: center; gap: 8px; }
+      #scrub { flex: 1; accent-color: #60d060; }
+      #status { white-space: nowrap; min-width: 200px; }
+      /* Maneuver editor sidebar — absolute overlay on the right of the canvas. */
+      #editor {
+        position: absolute; top: 8px; right: 8px; bottom: 8px; width: 320px;
+        background: rgba(6, 20, 6, 0.92); border: 1px solid #2a602a; border-radius: 4px;
+        padding: 8px; overflow-y: auto; font-size: 11px;
+        display: none; flex-direction: column; gap: 6px;
+      }
+      #editor.show { display: flex; }
+      #editor h2 { margin: 0 0 4px 0; font-size: 12px; color: #a0ffa0; }
+      #editor .section { border-top: 1px solid #1a3a1a; padding-top: 6px; }
+      #editor label { display: block; margin: 2px 0; }
+      #editor input[type="number"] {
+        width: 100%; background: #020a02; color: #80ff60; border: 1px solid #2a602a;
+        padding: 2px 4px; font: 11px ui-monospace, monospace;
+      }
+      #editor .vec3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px; }
+      #editor .maneuver { background: #0a1a0a; padding: 4px; border-radius: 3px; }
+      #editor button {
+        background: #061406; color: #80ff60; border: 1px solid #2a602a;
+        padding: 3px 8px; border-radius: 3px; cursor: pointer; font: 11px inherit;
+      }
+      #editor button:hover { background: #0d280d; border-color: #40a040; }
+      #editor button.danger { border-color: #803030; color: #ff9080; }
+      #editor button.primary { background: #1a4a1a; border-color: #60d060; }
+      #editor .row { display: flex; gap: 4px; align-items: center; }
     </style>
   </head>
   <body>
@@ -36,10 +64,48 @@
         <button id="btn-leo-j2">LEO + J2 drift</button>
         <button id="btn-hohmann">Hohmann LEO→GEO</button>
         <button id="btn-lambert">Lambert intercept</button>
+        <button id="btn-editor">Maneuver editor</button>
       </header>
       <div id="banner"></div>
-      <main><canvas id="scene"></canvas></main>
-      <footer id="status">init…</footer>
+      <main>
+        <canvas id="scene"></canvas>
+        <aside id="editor">
+          <h2>Initial state (ECI, m / m/s)</h2>
+          <div class="vec3">
+            <input id="ic-rx" type="number" step="1000" />
+            <input id="ic-ry" type="number" step="1000" />
+            <input id="ic-rz" type="number" step="1000" />
+          </div>
+          <div class="vec3">
+            <input id="ic-vx" type="number" step="10" />
+            <input id="ic-vy" type="number" step="10" />
+            <input id="ic-vz" type="number" step="10" />
+          </div>
+          <div class="row">
+            <label style="flex:1">Duration (s)
+              <input id="ic-duration" type="number" step="60" />
+            </label>
+            <label>Steps
+              <input id="ic-steps" type="number" step="50" min="2" max="20000" />
+            </label>
+          </div>
+          <div class="section">
+            <h2>Maneuvers (RIC frame)</h2>
+            <div id="man-list"></div>
+            <button id="btn-add-man" style="margin-top: 6px">+ Add maneuver</button>
+          </div>
+          <div class="section row">
+            <button id="btn-apply" class="primary">Propagate</button>
+            <button id="btn-reset">Reset to LEO</button>
+          </div>
+          <div id="editor-summary" class="section" style="font-family: ui-monospace, monospace; font-size: 10px;"></div>
+        </aside>
+      </main>
+      <footer>
+        <span id="status">init…</span>
+        <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
+        <span id="scrub-info"></span>
+      </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

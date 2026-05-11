@@ -12,11 +12,15 @@ export type Renderer = {
     positions: Float32Array<ArrayBuffer>,
     colors?: Float32Array<ArrayBuffer>,
   ): void;
+  /** Place a 3D-cross marker at the given inertial position (m). Pass null
+   *  to hide. Size auto-scales to ~3% of the current scene scale. */
+  setMarker(position: [number, number, number] | null,
+            color?: [number, number, number]): void;
   resize(): void;
 };
 
 const DEPTH_FORMAT = "depth24plus" as const;
-const LINE_WIDTH = 5; // pixels
+const LINE_WIDTH = 3; // pixels
 
 // Uniform layout (80 bytes, 16-byte aligned):
 //   mvp      : mat4x4<f32>  offset  0
@@ -105,6 +109,7 @@ function nullRenderer(kind: "none" | "webgl2-fallback" = "none"): Renderer {
     setSceneScale:   () => {},
     setCentralBody:  () => {},
     drawTrajectory:  () => {},
+    setMarker:       () => {},
     resize:          () => {},
   };
 }
@@ -328,6 +333,8 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   let solidBodyCount  = 0;
   let axesBuf:        GPUBuffer | null = null;
   let axesCount       = 0;
+  let markerBuf:      GPUBuffer | null = null;
+  let markerCount     = 0;
 
   let depthTexture: GPUTexture     | null = null;
   let depthView:    GPUTextureView | null = null;
@@ -459,6 +466,14 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
       pass.draw(axesCount);
     }
 
+    // 5. Spacecraft marker: always on top.
+    if (markerBuf && markerCount > 0) {
+      pass.setPipeline(thickAlwaysPipeline);
+      pass.setBindGroup(0, thickAlwaysBG);
+      pass.setVertexBuffer(0, markerBuf);
+      pass.draw(markerCount);
+    }
+
     pass.end();
     device.queue.submit([enc.finish()]);
     requestAnimationFrame(frame);
@@ -484,10 +499,37 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     sceneScale = metersPerUnit;
     rebuildScaleMat();
 
-    const axesData = listToQuads(buildAxes(1.1 * sceneScale));
+    const axesData = listToQuads(buildAxes(0.25 * sceneScale));
     [axesBuf, axesCount] = uploadThick(axesBuf, axesData);
 
     writeUniforms();
+  }
+
+  const MARKER_COLOR_DEFAULT: [number, number, number] = [1.0, 0.95, 0.25]; // bright yellow
+
+  function setMarker(
+    position: [number, number, number] | null,
+    color?: [number, number, number],
+  ): void {
+    if (position === null) {
+      markerBuf?.destroy();
+      markerBuf = null;
+      markerCount = 0;
+      return;
+    }
+    // 3D cross of three orthogonal line segments centred on `position`.
+    const size = 0.03 * sceneScale;
+    const c = color ?? MARKER_COLOR_DEFAULT;
+    const lineList = new Float32Array([
+      position[0] - size, position[1], position[2], c[0], c[1], c[2],
+      position[0] + size, position[1], position[2], c[0], c[1], c[2],
+      position[0], position[1] - size, position[2], c[0], c[1], c[2],
+      position[0], position[1] + size, position[2], c[0], c[1], c[2],
+      position[0], position[1], position[2] - size, c[0], c[1], c[2],
+      position[0], position[1], position[2] + size, c[0], c[1], c[2],
+    ]);
+    const quads = listToQuads(lineList);
+    [markerBuf, markerCount] = uploadThick(markerBuf, quads);
   }
 
   let dragging = false, lastX = 0, lastY = 0;
@@ -519,5 +561,5 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   window.addEventListener("resize", resize);
   requestAnimationFrame(frame);
 
-  return { kind: "webgpu", setSceneScale, setCentralBody, drawTrajectory, resize };
+  return { kind: "webgpu", setSceneScale, setCentralBody, drawTrajectory, setMarker, resize };
 }

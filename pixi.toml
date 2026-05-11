@@ -24,6 +24,8 @@ hatchling = "*"
 oamp = { path = ".", editable = true }
 spiceypy = "*"
 msgpack = "*"
+sgp4 = "*"
+pymsis = "*"
 
 [tasks]
 dev = "uvicorn oamp.api.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend"
