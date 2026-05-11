@@ -57,11 +57,25 @@ SUN: Final[Body] = Body(
     omega=2.865329e-6,  # 25.38-day sidereal at the equator
 )
 
+# Lunar unnormalised zonal harmonics (GRGM1200A low-order truncation).
+# J2 is the dominant term; J3..J6 are an order of magnitude or two smaller
+# than Earth's but well-determined.  We include them so jn_max≥2 actually
+# yields a contribution when MOON is the central body.
+_MOON_JN: Final[tuple[float, float, float, float, float, float]] = (
+    2.032e-4,    # J2
+    8.475e-6,    # J3
+    -9.592e-6,   # J4
+    7.158e-7,    # J5
+    -1.357e-5,   # J6
+    0.0,         # J7 (not in low-order LP solutions)
+)
+
 MOON: Final[Body] = Body(
     name="Moon",
     mu=4.9048695e12,
     radius=1_737_400.0,
-    j2=2.0321e-4,
+    j2=_MOON_JN[0],
+    jn=_MOON_JN,
     omega=2.6617e-6,  # synchronous rotation with orbital motion
 )
 

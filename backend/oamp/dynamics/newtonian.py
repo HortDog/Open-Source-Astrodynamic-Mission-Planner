@@ -255,7 +255,9 @@ def propagate_orbit(
                     mdot,
                     b.t_start_s,
                 )
-                arc_perturbation = compose(perturbation, thrust_pert) if perturbation else thrust_pert
+                arc_perturbation = (
+                    compose(perturbation, thrust_pert) if perturbation else thrust_pert
+                )
                 break
 
         rhs = _make_rhs(body.mu, arc_perturbation, t0_tdb)

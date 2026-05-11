@@ -62,6 +62,10 @@ class PropagateRequest(BaseModel):
     state: TwoBodyState
     duration_s: float
     steps: Annotated[int, Field(ge=2, le=20_000)] = 200
+    # Central-body selection. If `body_name` is supplied, μ / radius / J2 / Jn / ω
+    # are loaded from the matching Body constant and `mu` / `body_radius` are
+    # ignored (kept for back-compat with old clients).
+    body_name: Literal["EARTH", "MOON", "SUN"] | None = None
     mu: float = EARTH.mu
     body_radius: float = EARTH.radius
     # Perturbation toggles
@@ -128,6 +132,26 @@ class TleRequest(BaseModel):
 
 
 _BODY_MU = {"EARTH": EARTH.mu, "MOON": MOON.mu, "SUN": SUN.mu}
+_BODIES = {"EARTH": EARTH, "MOON": MOON, "SUN": SUN}
+
+
+def _resolve_body(req: PropagateRequest):
+    """Return the Body to use for a propagate request.
+
+    When `body_name` is set, return the canonical Body constant (so J_n, ω,
+    and J2 match the chosen central body).  Otherwise build a custom Body
+    around the legacy `mu`/`body_radius` fields with Earth's J_n profile
+    (back-compat path used by the existing demos)."""
+    if req.body_name is not None:
+        return _BODIES[req.body_name]
+    return type(EARTH)(
+        name="custom",
+        mu=req.mu,
+        radius=req.body_radius,
+        j2=EARTH.j2,
+        jn=EARTH.jn,
+        omega=EARTH.omega,
+    )
 
 
 @asynccontextmanager
@@ -227,14 +251,7 @@ def _build_perturbation(req: PropagateRequest, body) -> tuple[object | None, lis
 
 @app.post("/propagate")
 async def propagate(req: PropagateRequest) -> dict:
-    body = type(EARTH)(
-        name="custom",
-        mu=req.mu,
-        radius=req.body_radius,
-        j2=EARTH.j2,
-        jn=EARTH.jn,
-        omega=EARTH.omega,
-    )
+    body = _resolve_body(req)
     perturbation, active = _build_perturbation(req, body)
     maneuvers = [Maneuver(**m.model_dump()) for m in req.maneuvers]
     fburns = [FiniteBurn(**b.model_dump()) for b in req.finite_burns]
@@ -487,14 +504,7 @@ async def _stream_propagation(
     import time
 
     t_start = time.perf_counter()
-    body = type(EARTH)(
-        name="custom",
-        mu=req.mu,
-        radius=req.body_radius,
-        j2=EARTH.j2,
-        jn=EARTH.jn,
-        omega=EARTH.omega,
-    )
+    body = _resolve_body(req)
     perturbation, active = _build_perturbation(req, body)
     maneuvers = [Maneuver(**m.model_dump()) for m in req.maneuvers]
 

@@ -21,6 +21,13 @@ export type Renderer = {
     velocity?: [number, number, number] | null,
     color?: [number, number, number],
   ): void;
+  /** Render an off-centre body (e.g. the Moon at its inertial position) as a
+   *  small wireframe sphere.  Pass null position to hide. */
+  setSecondaryBody(
+    position: [number, number, number] | null,
+    radius: number,
+    color?: [number, number, number],
+  ): void;
   resize(): void;
 };
 
@@ -111,11 +118,12 @@ fn fs_dot(
 function nullRenderer(kind: "none" | "webgl2-fallback" = "none"): Renderer {
   return {
     kind,
-    setSceneScale:   () => {},
-    setCentralBody:  () => {},
-    drawTrajectory:  () => {},
-    setMarker:       () => {},
-    resize:          () => {},
+    setSceneScale:    () => {},
+    setCentralBody:   () => {},
+    drawTrajectory:   () => {},
+    setMarker:        () => {},
+    setSecondaryBody: () => {},
+    resize:           () => {},
   };
 }
 
@@ -337,6 +345,8 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   let bodyCount       = 0;
   let solidBodyBuf:   GPUBuffer | null = null;
   let solidBodyCount  = 0;
+  let secBodyBuf:     GPUBuffer | null = null;
+  let secBodyCount    = 0;
   let axesBuf:        GPUBuffer | null = null;
   let axesCount       = 0;
   let markerBuf:      GPUBuffer | null = null;
@@ -464,6 +474,14 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     pass.setBindGroup(0, thickLeBG);
     if (trajBuf && trajCount > 0) { pass.setVertexBuffer(0, trajBuf); pass.draw(trajCount); }
 
+    // 5b. Secondary body (Moon at its inertial position) — always visible.
+    if (secBodyBuf && secBodyCount > 0) {
+      pass.setPipeline(thickAlwaysPipeline);
+      pass.setBindGroup(0, thickAlwaysBG);
+      pass.setVertexBuffer(0, secBodyBuf);
+      pass.draw(secBodyCount);
+    }
+
     // 4. Axes: always on top.
     if (axesBuf && axesCount > 0) {
       pass.setPipeline(thickAlwaysPipeline);
@@ -499,6 +517,34 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
 
     const solidData = buildSolidSphere(radiusMeters * 0.995); // slightly smaller to avoid z-fighting with wireframe
     [solidBodyBuf, solidBodyCount] = uploadRaw(solidBodyBuf, solidData, 3);
+  }
+
+  const SEC_BODY_COLOR: [number, number, number] = [0.55, 0.55, 0.55]; // moon-grey
+
+  function setSecondaryBody(
+    position: [number, number, number] | null,
+    radius: number,
+    color?: [number, number, number],
+  ): void {
+    if (position === null || radius <= 0) {
+      secBodyBuf?.destroy();
+      secBodyBuf = null; secBodyCount = 0;
+      return;
+    }
+    // Build a sparse wireframe sphere translated to `position`.
+    const wire = buildSphere(radius, 9, 12, 36, 18);  // lower resolution for the secondary body
+    const out = new Float32Array(wire.length);
+    const c = color ?? SEC_BODY_COLOR;
+    for (let i = 0; i < wire.length; i += 6) {
+      out[i]     = wire[i]!     + position[0];
+      out[i + 1] = wire[i + 1]! + position[1];
+      out[i + 2] = wire[i + 2]! + position[2];
+      out[i + 3] = c[0];
+      out[i + 4] = c[1];
+      out[i + 5] = c[2];
+    }
+    const quads = listToQuads(out);
+    [secBodyBuf, secBodyCount] = uploadThick(secBodyBuf, quads);
   }
 
   function setSceneScale(metersPerUnit: number): void {
@@ -603,5 +649,5 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   window.addEventListener("resize", resize);
   requestAnimationFrame(frame);
 
-  return { kind: "webgpu", setSceneScale, setCentralBody, drawTrajectory, setMarker, resize };
+  return { kind: "webgpu", setSceneScale, setCentralBody, drawTrajectory, setMarker, setSecondaryBody, resize };
 }

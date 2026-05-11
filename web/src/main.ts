@@ -2,9 +2,13 @@ import {
   fetchHealth,
   optimizeHohmann,
   optimizeLambert,
+  optimizeMultiBurn,
   propagate,
   runLaunch,
   SimSocket,
+  spiceState,
+  tleByNorad,
+  tleParse,
   type FiniteBurnSpec,
   type Vec3,
 } from "./api";
@@ -19,11 +23,12 @@ const btnLaunch = document.getElementById("btn-launch") as HTMLButtonElement;
 const btnLeoJ2 = document.getElementById("btn-leo-j2") as HTMLButtonElement;
 const btnHohmann = document.getElementById("btn-hohmann") as HTMLButtonElement;
 const btnLambert = document.getElementById("btn-lambert") as HTMLButtonElement;
+const btnCislunar = document.getElementById("btn-cislunar") as HTMLButtonElement;
 const btnEditor = document.getElementById("btn-editor") as HTMLButtonElement;
 const editor = document.getElementById("editor") as HTMLElement;
 const scrub = document.getElementById("scrub") as HTMLInputElement;
 const scrubInfo = document.getElementById("scrub-info") as HTMLSpanElement;
-const allButtons = [btnLeo, btnLaunch, btnLeoJ2, btnHohmann, btnLambert];
+const allButtons = [btnLeo, btnLaunch, btnLeoJ2, btnHohmann, btnLambert, btnCislunar];
 
 const setStatus = (s: string) => { status.textContent = s; };
 const showBanner = (msg: string) => { banner.textContent = msg; banner.classList.add("show"); };
@@ -32,6 +37,14 @@ const MU_EARTH = 3.986004418e14;
 const R_EARTH = 6_378_137;
 const R0 = 7_000_000;
 const INCLINATION_DEG = 51.6;
+
+// Body constants table for the central-body selector (frontend mirror of the
+// canonical values in oamp.bodies — used only to seed the editor IC defaults).
+type BodyName = "EARTH" | "MOON";
+const BODY: Record<BodyName, { mu: number; radius: number; default_alt_m: number; label: string }> = {
+  EARTH: { mu: 3.986004418e14, radius: 6_378_137,  default_alt_m: 622_000,  label: "Earth" },
+  MOON:  { mu: 4.9048695e12,   radius: 1_737_400,  default_alt_m: 100_000,  label: "Moon"  },
+};
 
 // Phase colours (phosphor palette + accents for distinct transfer phases).
 const C_DEPART:  [number, number, number] = [0.20, 1.00, 0.30]; // bright phosphor — initial orbit
@@ -345,6 +358,81 @@ async function showLambert(renderer: Renderer): Promise<void> {
   );
 }
 
+/** Cislunar demo: Earth-Moon Lambert transfer.
+ *
+ *  Loads a 200-km LEO initial state, queries the Moon's ephemeris at a fixed
+ *  demo epoch via SPICE, solves Lambert for a ~3.5-day transfer to that
+ *  position, applies the TLI Δv as an impulsive RIC maneuver, propagates with
+ *  J2 + third-body Moon active, and renders the Moon at its inertial position.
+ *  Requires SPICE kernels — bail with a hint if `/spice/state` is unavailable. */
+async function showCislunar(renderer: Renderer): Promise<void> {
+  if (renderer.kind !== "webgpu") return;
+  setStatus("setting up cislunar TLI demo…");
+
+  const utc = "2026-01-01T00:00:00";
+  let moonR: Vec3;
+  try {
+    const moon = await spiceState("MOON", utc, "EARTH", "J2000");
+    moonR = moon.r;
+  } catch {
+    setStatus("SPICE kernels unavailable — run `pixi run kernels` first");
+    return;
+  }
+
+  const r_leo = R_EARTH + 200e3;
+  const v_leo = Math.sqrt(MU_EARTH / r_leo);
+  const tof_s = 3.5 * 86400;  // 3.5 d to lunar SOI
+
+  const lb = await optimizeLambert({
+    r1_m: [r_leo, 0, 0],
+    r2_m: moonR,
+    tof_s,
+    mu: MU_EARTH,
+  });
+  if (!lb.converged) {
+    setStatus("Lambert diverged for cislunar setup");
+    return;
+  }
+
+  // Δv1 in inertial.  At t=0 the local RIC frame is R̂=+X, Î=+Y, Ĉ=+Z so
+  // ECI Δv = RIC Δv element-wise — load it directly as a RIC maneuver.
+  const dv1: Vec3 = [
+    lb.v1_m_s[0],
+    lb.v1_m_s[1] - v_leo,
+    lb.v1_m_s[2],
+  ];
+
+  editorState.body = "EARTH";
+  editorState.rx = r_leo; editorState.ry = 0; editorState.rz = 0;
+  editorState.vx = 0; editorState.vy = v_leo; editorState.vz = 0;
+  editorState.duration_s = tof_s;
+  editorState.steps = 1200;
+  editorState.j2 = true; editorState.jn_max = 2;
+  editorState.third_body_moon = true;
+  editorState.third_body_sun = false;
+  editorState.drag = false; editorState.srp = false;
+  editorState.initial_mass_kg = 5000;
+  editorState.maneuvers = [{
+    kind: "impulsive",
+    t_offset_s: 60,
+    dv_r: dv1[0], dv_i: dv1[1], dv_c: dv1[2],
+    duration_s: 300, thrust_n: 1000, isp_s: 300,
+    dir_r: 0, dir_i: 1, dir_c: 0,
+  }];
+  fillIc();
+  fillPerturbations();
+  renderManeuverList();
+  await applyEditor(renderer);
+
+  const dvMag = Math.hypot(dv1[0], dv1[1], dv1[2]);
+  const moonRangeKm = Math.hypot(moonR[0], moonR[1], moonR[2]) / 1000;
+  setStatus(
+    `Cislunar TLI: |Δv|=${(dvMag / 1000).toFixed(3)} km/s · ` +
+    `TOF=${(tof_s / 86400).toFixed(1)} d · Moon @ ${moonRangeKm.toFixed(0)} km · ` +
+    `J2 + 3rd-body Moon active`,
+  );
+}
+
 // --------------------------------------------------------------------------- //
 //  Maneuver editor — sidebar panel that lets the user set IC, add Δv kicks,
 //  and re-propagate the trajectory.
@@ -363,6 +451,7 @@ type ManeuverRow = {
 };
 
 const editorState: {
+  body: BodyName;
   rx: number; ry: number; rz: number;
   vx: number; vy: number; vz: number;
   duration_s: number;
@@ -372,10 +461,17 @@ const editorState: {
   j2: boolean;
   jn_max: number;
   drag: boolean;
+  drag_model: "exponential" | "msis";
   drag_mass_kg: number;
   drag_area_m2: number;
   drag_cd: number;
+  srp: boolean;
+  srp_area_m2: number;
+  srp_cr: number;
+  third_body_moon: boolean;
+  third_body_sun: boolean;
 } = {
+  body: "EARTH",
   rx: R0, ry: 0, rz: 0,
   vx: 0, vy: Math.sqrt(MU_EARTH / R0), vz: 0,
   duration_s: 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH),
@@ -385,32 +481,64 @@ const editorState: {
   j2: false,
   jn_max: 2,
   drag: false,
+  drag_model: "exponential",
   drag_mass_kg: 500,
   drag_area_m2: 4.0,
   drag_cd: 2.2,
+  srp: false,
+  srp_area_m2: 4.0,
+  srp_cr: 1.5,
+  third_body_moon: false,
+  third_body_sun: false,
 };
 
 function fillPerturbations(): void {
-  (document.getElementById("pert-j2") as HTMLInputElement).checked = editorState.j2;
-  (document.getElementById("pert-drag") as HTMLInputElement).checked = editorState.drag;
-  (document.getElementById("pert-mass") as HTMLInputElement).value = String(editorState.drag_mass_kg);
-  (document.getElementById("pert-area") as HTMLInputElement).value = String(editorState.drag_area_m2);
-  (document.getElementById("pert-cd") as HTMLInputElement).value = String(editorState.drag_cd);
+  const set = (id: string, v: string | boolean) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement;
+    if (typeof v === "boolean") (el as HTMLInputElement).checked = v;
+    else el.value = v;
+  };
+  set("pert-j2", editorState.j2);
+  set("pert-jn-max", String(editorState.jn_max));
+  set("pert-drag", editorState.drag);
+  set("pert-drag-model", editorState.drag_model);
+  set("pert-srp", editorState.srp);
+  set("pert-3b-moon", editorState.third_body_moon);
+  set("pert-3b-sun", editorState.third_body_sun);
+  set("pert-mass", String(editorState.drag_mass_kg));
+  set("pert-area", String(editorState.drag_area_m2));
+  set("pert-cd", String(editorState.drag_cd));
+  set("pert-srp-area", String(editorState.srp_area_m2));
+  set("pert-srp-cr", String(editorState.srp_cr));
+  updatePertVehicleVisibility();
+}
+
+function updatePertVehicleVisibility(): void {
+  const needVehicle = editorState.drag || editorState.srp;
   (document.getElementById("pert-vehicle") as HTMLElement).style.display =
-    editorState.drag ? "grid" : "none";
+    needVehicle ? "block" : "none";
 }
 
 function readPerturbations(): void {
   const chk = (id: string) => (document.getElementById(id) as HTMLInputElement).checked;
   const n = (id: string) => parseFloat((document.getElementById(id) as HTMLInputElement).value);
+  const s = (id: string) => (document.getElementById(id) as HTMLSelectElement).value;
   editorState.j2 = chk("pert-j2");
+  editorState.jn_max = parseInt(s("pert-jn-max"), 10);
   editorState.drag = chk("pert-drag");
+  editorState.drag_model = s("pert-drag-model") as "exponential" | "msis";
+  editorState.srp = chk("pert-srp");
+  editorState.third_body_moon = chk("pert-3b-moon");
+  editorState.third_body_sun = chk("pert-3b-sun");
   editorState.drag_mass_kg = n("pert-mass");
   editorState.drag_area_m2 = n("pert-area");
   editorState.drag_cd = n("pert-cd");
+  editorState.srp_area_m2 = n("pert-srp-area");
+  editorState.srp_cr = n("pert-srp-cr");
 }
 
 function fillIc(): void {
+  (document.getElementById("ic-body") as HTMLSelectElement).value = editorState.body;
   (document.getElementById("ic-rx") as HTMLInputElement).value = String(editorState.rx);
   (document.getElementById("ic-ry") as HTMLInputElement).value = String(editorState.ry);
   (document.getElementById("ic-rz") as HTMLInputElement).value = String(editorState.rz);
@@ -424,11 +552,31 @@ function fillIc(): void {
 
 function readIc(): void {
   const n = (id: string) => parseFloat((document.getElementById(id) as HTMLInputElement).value);
+  editorState.body = (document.getElementById("ic-body") as HTMLSelectElement).value as BodyName;
   editorState.rx = n("ic-rx"); editorState.ry = n("ic-ry"); editorState.rz = n("ic-rz");
   editorState.vx = n("ic-vx"); editorState.vy = n("ic-vy"); editorState.vz = n("ic-vz");
   editorState.duration_s = n("ic-duration");
   editorState.steps = parseInt((document.getElementById("ic-steps") as HTMLInputElement).value, 10);
   editorState.initial_mass_kg = n("ic-mass");
+}
+
+/** Repopulate the IC fields with a circular equatorial orbit at the body's
+ *  default altitude.  Called when the user changes the central-body selector. */
+function applyBodyDefaults(body: BodyName): void {
+  const b = BODY[body];
+  const r0 = b.radius + b.default_alt_m;
+  const v0 = Math.sqrt(b.mu / r0);
+  editorState.body = body;
+  editorState.rx = r0; editorState.ry = 0; editorState.rz = 0;
+  editorState.vx = 0;  editorState.vy = v0; editorState.vz = 0;
+  editorState.duration_s = 2 * Math.PI * Math.sqrt((r0 * r0 * r0) / b.mu);
+  // Drag/SRP atmospheric envelope only makes sense for Earth — clear them
+  // so the user isn't surprised by a force that the backend will reject.
+  if (body !== "EARTH") {
+    editorState.drag = false; editorState.srp = false;
+  }
+  fillIc();
+  fillPerturbations();
 }
 
 function renderManeuverList(): void {
@@ -506,6 +654,7 @@ async function applyEditor(renderer: Renderer): Promise<void> {
   readIc();
   readPerturbations();
   setStatus("propagating editor scenario…");
+  const b = BODY[editorState.body];
   const data = await propagate({
     state: {
       r: [editorState.rx, editorState.ry, editorState.rz],
@@ -513,17 +662,27 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     },
     duration_s: editorState.duration_s,
     steps: editorState.steps,
-    mu: MU_EARTH,
-    body_radius: R_EARTH,
+    body_name: editorState.body,
+    mu: b.mu,
+    body_radius: b.radius,
     ...(editorState.j2 ? { j2_enabled: true as const, jn_max: editorState.jn_max } : {}),
-    ...(editorState.drag ? {
-      drag: true as const,
+    ...((editorState.drag || editorState.srp) ? {
       vehicle: {
         mass_kg: editorState.drag_mass_kg,
         drag_area_m2: editorState.drag_area_m2,
         drag_cd: editorState.drag_cd,
+        srp_area_m2: editorState.srp_area_m2,
+        srp_cr: editorState.srp_cr,
       },
     } : {}),
+    ...(editorState.drag ? { drag: true as const, drag_model: editorState.drag_model } : {}),
+    ...(editorState.srp ? { srp: true as const } : {}),
+    ...(((editorState.third_body_moon || editorState.third_body_sun) ? {
+      third_body: [
+        ...(editorState.third_body_moon ? ["MOON"] : []),
+        ...(editorState.third_body_sun ? ["SUN"] : []),
+      ],
+    } : {}) as { third_body?: string[] }),
     maneuvers: editorState.maneuvers
       .filter((m) => m.kind === "impulsive")
       .map((m) => ({ t_offset_s: m.t_offset_s, dv_ric: [m.dv_r, m.dv_i, m.dv_c] as [number, number, number] })),
@@ -547,8 +706,27 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     const r = Math.hypot(s[0]!, s[1]!, s[2]!);
     if (r > maxR) maxR = r;
   }
-  renderer.setSceneScale(Math.max(R0, maxR * 1.2));
-  renderer.setCentralBody(R_EARTH);
+  // Decide on a final scene scale that accounts for the Moon if it'll be
+  // visible (third-body Moon + Earth-centric).
+  const willRenderMoon = editorState.body === "EARTH" && editorState.third_body_moon;
+  const moonRange = 4.0e8;  // approx Earth-Moon distance, used as a min scale
+  const sceneScale = willRenderMoon
+    ? Math.max(b.radius * 1.1, maxR * 1.2, moonRange * 1.2)
+    : Math.max(b.radius * 1.1, maxR * 1.2);
+  renderer.setSceneScale(sceneScale);
+  renderer.setCentralBody(b.radius);
+
+  // Fetch and render Moon position (best-effort — SPICE kernels may be absent).
+  if (willRenderMoon) {
+    try {
+      const moonState = await spiceState("MOON", "2026-01-01T00:00:00", "EARTH", "J2000");
+      renderer.setSecondaryBody(moonState.r, BODY.MOON.radius);
+    } catch {
+      renderer.setSecondaryBody(null, 0);
+    }
+  } else {
+    renderer.setSecondaryBody(null, 0);
+  }
 
   // Phase colours by manoeuvre boundaries (all events, sorted).
   const phaseTimes = [0, ...editorState.maneuvers.map((m) => m.t_offset_s).sort((a, b) => a - b)];
@@ -572,6 +750,14 @@ async function applyEditor(renderer: Renderer): Promise<void> {
   renderer.drawTrajectory(statesToPositions(data.states), colors);
   setActiveTrajectory(data.t, data.states);
 
+  // Active-perturbations badge — what the server actually applied.
+  const badge = document.getElementById("pert-active");
+  if (badge) {
+    badge.textContent = data.perturbations && data.perturbations.length > 0
+      ? "active: " + data.perturbations.join(" · ")
+      : "no perturbations (two-body)";
+  }
+
   // Summary.
   const totalImpDv = editorState.maneuvers
     .filter((m) => m.kind === "impulsive")
@@ -591,18 +777,185 @@ async function applyEditor(renderer: Renderer): Promise<void> {
 }
 
 function resetEditor(): void {
-  editorState.rx = R0; editorState.ry = 0; editorState.rz = 0;
-  editorState.vx = 0; editorState.vy = Math.sqrt(MU_EARTH / R0); editorState.vz = 0;
-  editorState.duration_s = 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH);
+  editorState.body = "EARTH";
   editorState.steps = 400;
   editorState.maneuvers = [];
   editorState.initial_mass_kg = 1000;
   editorState.j2 = false; editorState.jn_max = 2;
-  editorState.drag = false; editorState.drag_mass_kg = 500;
-  editorState.drag_area_m2 = 4.0; editorState.drag_cd = 2.2;
-  fillIc();
-  fillPerturbations();
+  editorState.drag = false; editorState.drag_model = "exponential";
+  editorState.drag_mass_kg = 500; editorState.drag_area_m2 = 4.0; editorState.drag_cd = 2.2;
+  editorState.srp = false; editorState.srp_area_m2 = 4.0; editorState.srp_cr = 1.5;
+  editorState.third_body_moon = false; editorState.third_body_sun = false;
+  applyBodyDefaults("EARTH");
   renderManeuverList();
+}
+
+// --------------------------------------------------------------------------- //
+//  Solver panel — Hohmann, Lambert, Multi-burn NLP, TLE.
+// --------------------------------------------------------------------------- //
+
+function makeImpulse(t: number, dv: Vec3): ManeuverRow {
+  return {
+    kind: "impulsive",
+    t_offset_s: t,
+    dv_r: dv[0], dv_i: dv[1], dv_c: dv[2],
+    duration_s: 300, thrust_n: 1000, isp_s: 300,
+    dir_r: 0, dir_i: 1, dir_c: 0,
+  };
+}
+
+function renderSolverForm(): void {
+  const type = (document.getElementById("solver-type") as HTMLSelectElement).value;
+  const form = document.getElementById("solver-form")!;
+  const b = BODY[editorState.body];
+  const r1Default = b.radius + b.default_alt_m;
+  const r2Default = editorState.body === "EARTH" ? 42_164_000 : b.radius + 1_000_000;
+
+  if (type === "hohmann") {
+    form.innerHTML = `
+      <label>r₁ (m)<input id="sv-r1" type="number" value="${r1Default}" step="100000" /></label>
+      <label>r₂ (m)<input id="sv-r2" type="number" value="${r2Default}" step="100000" /></label>`;
+  } else if (type === "lambert") {
+    form.innerHTML = `
+      <div style="opacity:.7;margin-bottom:2px">r⃗₁ (m)</div>
+      <div class="vec3">
+        <input id="sv-r1x" type="number" value="${r1Default}" />
+        <input id="sv-r1y" type="number" value="0" />
+        <input id="sv-r1z" type="number" value="0" />
+      </div>
+      <div style="opacity:.7;margin:3px 0 2px">r⃗₂ (m)</div>
+      <div class="vec3">
+        <input id="sv-r2x" type="number" value="${(-r2Default * 0.5).toFixed(0)}" />
+        <input id="sv-r2y" type="number" value="${(r2Default * 0.87).toFixed(0)}" />
+        <input id="sv-r2z" type="number" value="0" />
+      </div>
+      <label>TOF (s)<input id="sv-tof" type="number" value="14400" step="60" /></label>`;
+  } else if (type === "multi-burn") {
+    form.innerHTML = `
+      <div style="opacity:.7;margin-bottom:2px">Initial state taken from editor IC.</div>
+      <div style="opacity:.7;margin-bottom:2px">Target r⃗_f (m)</div>
+      <div class="vec3">
+        <input id="sv-xf-rx" type="number" value="${r2Default}" />
+        <input id="sv-xf-ry" type="number" value="0" />
+        <input id="sv-xf-rz" type="number" value="0" />
+      </div>
+      <div style="opacity:.7;margin:3px 0 2px">Target v⃗_f (m/s)</div>
+      <div class="vec3">
+        <input id="sv-xf-vx" type="number" value="0" />
+        <input id="sv-xf-vy" type="number" value="${Math.sqrt(b.mu / r2Default).toFixed(2)}" />
+        <input id="sv-xf-vz" type="number" value="0" />
+      </div>
+      <label>Burn epochs (s, comma-sep)
+        <input id="sv-epochs" type="text" value="600, 18000" /></label>
+      <label>t_final (s)<input id="sv-tfin" type="number" value="36000" step="600" /></label>`;
+  } else if (type === "tle") {
+    form.innerHTML = `
+      <label>NORAD ID (fetch from Celestrak)
+        <input id="sv-norad" type="number" placeholder="25544" step="1" /></label>
+      <div style="opacity:.7;margin:3px 0 2px">— or paste TLE —</div>
+      <input id="sv-l1" type="text" placeholder="Line 1" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;font:10px ui-monospace,monospace;padding:2px" />
+      <input id="sv-l2" type="text" placeholder="Line 2" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;font:10px ui-monospace,monospace;padding:2px;margin-top:2px" />
+      <label>at_utc (optional ISO-8601)
+        <input id="sv-utc" type="text" placeholder="2026-01-01T00:00:00" /></label>`;
+  }
+}
+
+async function runSolver(renderer: Renderer): Promise<void> {
+  const type = (document.getElementById("solver-type") as HTMLSelectElement).value;
+  const info = document.getElementById("solver-info")!;
+  const b = BODY[editorState.body];
+  const n = (id: string) => parseFloat((document.getElementById(id) as HTMLInputElement).value);
+  const fmt = (x: number) => (x / 1000).toFixed(3);
+
+  try {
+    if (type === "hohmann") {
+      const r1 = n("sv-r1"), r2 = n("sv-r2");
+      const res = await optimizeHohmann({ r1_m: r1, r2_m: r2, mu: b.mu });
+      const v1 = Math.sqrt(b.mu / r1);
+      editorState.rx = r1; editorState.ry = 0; editorState.rz = 0;
+      editorState.vx = 0;  editorState.vy = v1; editorState.vz = 0;
+      editorState.duration_s = res.transfer_time_s + 600;
+      editorState.maneuvers = [
+        makeImpulse(60, [0, res.dv1_m_s, 0]),
+        makeImpulse(60 + res.transfer_time_s, [0, res.dv2_m_s, 0]),
+      ];
+      info.innerHTML =
+        `Δv₁=${fmt(res.dv1_m_s)} km/s · Δv₂=${fmt(res.dv2_m_s)} km/s<br>` +
+        `total=${fmt(res.dv_total_m_s)} km/s · TOF=${(res.transfer_time_s / 3600).toFixed(2)} h<br>` +
+        `sma=${(res.semi_major_axis_m / 1000).toFixed(0)} km`;
+    } else if (type === "lambert") {
+      const r1: Vec3 = [n("sv-r1x"), n("sv-r1y"), n("sv-r1z")];
+      const r2: Vec3 = [n("sv-r2x"), n("sv-r2y"), n("sv-r2z")];
+      const tof = n("sv-tof");
+      const res = await optimizeLambert({ r1_m: r1, r2_m: r2, tof_s: tof, mu: b.mu });
+      editorState.rx = r1[0]; editorState.ry = r1[1]; editorState.rz = r1[2];
+      editorState.vx = res.v1_m_s[0]; editorState.vy = res.v1_m_s[1]; editorState.vz = res.v1_m_s[2];
+      editorState.duration_s = tof;
+      editorState.maneuvers = [];
+      const v1n = Math.hypot(...res.v1_m_s), v2n = Math.hypot(...res.v2_m_s);
+      info.innerHTML =
+        `${res.converged ? "✓ converged" : "✗ diverged"} (${res.iterations} iter)<br>` +
+        `|v⃗₁|=${fmt(v1n)} km/s · |v⃗₂|=${fmt(v2n)} km/s<br>` +
+        `TOF=${(tof / 3600).toFixed(2)} h`;
+    } else if (type === "multi-burn") {
+      readIc();
+      const epochs = (document.getElementById("sv-epochs") as HTMLInputElement).value
+        .split(",").map(s => parseFloat(s.trim())).filter(Number.isFinite);
+      const tfin = n("sv-tfin");
+      const res = await optimizeMultiBurn({
+        x0_r: [editorState.rx, editorState.ry, editorState.rz],
+        x0_v: [editorState.vx, editorState.vy, editorState.vz],
+        xf_r: [n("sv-xf-rx"), n("sv-xf-ry"), n("sv-xf-rz")],
+        xf_v: [n("sv-xf-vx"), n("sv-xf-vy"), n("sv-xf-vz")],
+        maneuver_epochs_s: epochs,
+        t_final_s: tfin,
+        mu: b.mu,
+      });
+      editorState.duration_s = tfin;
+      // NLP returns inertial Δvs.  Our editor speaks RIC, so we can't 1:1
+      // round-trip without propagating to each epoch; print the result and
+      // let the user adjust.
+      info.innerHTML =
+        `${res.converged ? "✓ converged" : "✗ diverged"} (${res.iterations} iter)<br>` +
+        `Σ |Δv| = ${fmt(res.total_dv_m_s)} km/s<br>` +
+        res.dv_inertial_m_s.map((dv, i) => {
+          const mag = Math.hypot(...dv);
+          return `Δv${i + 1}@${epochs[i]}s: |${fmt(mag)}| km/s (inertial)`;
+        }).join("<br>") +
+        `<br><span style="opacity:.6">(inertial Δv — not auto-loaded as RIC)</span>`;
+    } else if (type === "tle") {
+      const noradStr = (document.getElementById("sv-norad") as HTMLInputElement).value;
+      const utc = (document.getElementById("sv-utc") as HTMLInputElement).value || undefined;
+      const norad = parseFloat(noradStr);
+      const resp = Number.isFinite(norad)
+        ? await tleByNorad(norad, utc)
+        : await tleParse(
+            (document.getElementById("sv-l1") as HTMLInputElement).value,
+            (document.getElementById("sv-l2") as HTMLInputElement).value,
+            "",
+            utc,
+          );
+      const r = resp.state.r, v = resp.state.v;
+      const rmag = Math.hypot(r[0], r[1], r[2]);
+      const period = 2 * Math.PI * Math.sqrt(rmag ** 3 / b.mu);
+      // TLEs are Earth-only; force the body selector to EARTH for correctness.
+      editorState.body = "EARTH";
+      editorState.rx = r[0]; editorState.ry = r[1]; editorState.rz = r[2];
+      editorState.vx = v[0]; editorState.vy = v[1]; editorState.vz = v[2];
+      editorState.duration_s = period;
+      editorState.maneuvers = [];
+      info.innerHTML =
+        `<strong>${resp.name || "(unnamed)"}</strong> NORAD ${resp.norad_id}<br>` +
+        `alt=${resp.altitude_km.toFixed(0)} km · |v|=${fmt(resp.speed_m_s)} km/s<br>` +
+        `period=${(period / 60).toFixed(1)} min`;
+    }
+    fillIc();
+    renderManeuverList();
+    await applyEditor(renderer);
+  } catch (e) {
+    info.textContent = `error: ${(e as Error).message}`;
+    setStatus(`solver failed: ${(e as Error).message}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -640,6 +993,7 @@ async function main(): Promise<void> {
   wire(btnLaunch,  () => showLaunch(renderer));
   wire(btnHohmann, () => showHohmann(renderer));
   wire(btnLambert, () => showLambert(renderer));
+  wire(btnCislunar, () => showCislunar(renderer));
 
   // Maneuver-editor toggle + initial population.
   resetEditor();
@@ -669,10 +1023,33 @@ async function main(): Promise<void> {
   (document.getElementById("btn-reset") as HTMLButtonElement)
     .addEventListener("click", () => resetEditor());
 
+  const refreshVehicle = () => {
+    const drag = (document.getElementById("pert-drag") as HTMLInputElement).checked;
+    const srp = (document.getElementById("pert-srp") as HTMLInputElement).checked;
+    (document.getElementById("pert-vehicle") as HTMLElement).style.display =
+      (drag || srp) ? "block" : "none";
+  };
   (document.getElementById("pert-drag") as HTMLInputElement)
+    .addEventListener("change", refreshVehicle);
+  (document.getElementById("pert-srp") as HTMLInputElement)
+    .addEventListener("change", refreshVehicle);
+
+  // Central body selector — repopulate the IC fields with sensible defaults
+  // for the new body (low circular orbit) and refresh the perturbation panel.
+  (document.getElementById("ic-body") as HTMLSelectElement)
     .addEventListener("change", (e) => {
-      (document.getElementById("pert-vehicle") as HTMLElement).style.display =
-        (e.target as HTMLInputElement).checked ? "grid" : "none";
+      applyBodyDefaults((e.target as HTMLSelectElement).value as BodyName);
+      refreshVehicle();
+      renderSolverForm();  // refresh defaults that depend on the body
+    });
+
+  // Solver panel.
+  renderSolverForm();
+  (document.getElementById("solver-type") as HTMLSelectElement)
+    .addEventListener("change", renderSolverForm);
+  (document.getElementById("btn-solve") as HTMLButtonElement)
+    .addEventListener("click", () => {
+      runSolver(renderer).catch((e) => setStatus(`solver error: ${(e as Error).message}`));
     });
 
   await showLeo(renderer, false);

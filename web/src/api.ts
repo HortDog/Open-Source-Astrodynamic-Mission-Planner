@@ -28,6 +28,7 @@ export type PropagateRequest = {
   state: TwoBodyState;
   duration_s: number;
   steps?: number;
+  body_name?: "EARTH" | "MOON" | "SUN";
   mu?: number;
   body_radius?: number;
   j2_enabled?: boolean;
@@ -40,6 +41,8 @@ export type PropagateRequest = {
   maneuvers?: ManeuverSpec[];
   finite_burns?: FiniteBurnSpec[];
   initial_mass_kg?: number;
+  drag_model?: "exponential" | "msis";
+  integrator?: "dop853" | "verlet" | "yoshida4";
 };
 
 export type PropagateResponse = {
@@ -98,6 +101,62 @@ export async function optimizeLambert(req: {
   return r.json();
 }
 
+export type MultiBurnRequest = {
+  x0_r: Vec3; x0_v: Vec3;
+  xf_r: Vec3; xf_v: Vec3;
+  maneuver_epochs_s: number[];
+  t_final_s: number;
+  mu?: number;
+  initial_dv_guess?: Vec3[];
+};
+
+export type MultiBurnResponse = {
+  dv_inertial_m_s: Vec3[];
+  total_dv_m_s: number;
+  converged: boolean;
+  iterations: number;
+  final_state_m: Vec3;
+  final_velocity_m_s: Vec3;
+};
+
+export async function optimizeMultiBurn(req: MultiBurnRequest): Promise<MultiBurnResponse> {
+  const r = await fetch("/api/optimize/multi-burn", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`multi-burn ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type TleResponse = {
+  name: string;
+  norad_id: number;
+  epoch_jd: number;
+  state: { r: Vec3; v: Vec3 };
+  altitude_km: number;
+  speed_m_s: number;
+};
+
+export async function tleByNorad(norad: number, at_utc?: string): Promise<TleResponse> {
+  const url = `/api/tle/${norad}` + (at_utc ? `?at_utc=${encodeURIComponent(at_utc)}` : "");
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`tle ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export async function tleParse(
+  line1: string, line2: string, name = "", at_utc?: string,
+): Promise<TleResponse> {
+  const r = await fetch("/api/tle/parse", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ line1, line2, name, at_utc }),
+  });
+  if (!r.ok) throw new Error(`tle ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
 export type LaunchResponse = {
   t: number[];
   states: number[][];
@@ -117,6 +176,29 @@ export async function runLaunch(): Promise<LaunchResponse> {
     body: "null",
   });
   if (!r.ok) throw new Error(`launch ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type SpiceState = {
+  et: number;
+  r: Vec3;
+  v: Vec3;
+  frame: string;
+  observer: string;
+};
+
+export async function spiceState(
+  target: string,
+  utc: string,
+  observer = "EARTH",
+  frame = "J2000",
+): Promise<SpiceState> {
+  const r = await fetch("/api/spice/state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target, utc, observer, frame }),
+  });
+  if (!r.ok) throw new Error(`spice ${r.status}: ${await r.text()}`);
   return r.json();
 }
 

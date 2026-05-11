@@ -64,13 +64,22 @@
         <button id="btn-leo-j2">LEO + J2 drift</button>
         <button id="btn-hohmann">Hohmann LEO→GEO</button>
         <button id="btn-lambert">Lambert intercept</button>
+        <button id="btn-cislunar">Cislunar TLI</button>
         <button id="btn-editor">Maneuver editor</button>
       </header>
       <div id="banner"></div>
       <main>
         <canvas id="scene"></canvas>
         <aside id="editor">
-          <h2>Initial state (ECI, m / m/s)</h2>
+          <div class="row" style="margin-bottom:4px">
+            <label style="flex:1">Central body
+              <select id="ic-body" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;padding:2px 4px;font:11px ui-monospace, monospace">
+                <option value="EARTH">Earth</option>
+                <option value="MOON">Moon</option>
+              </select>
+            </label>
+          </div>
+          <h2>Initial state (BCI, m / m/s)</h2>
           <div class="vec3">
             <input id="ic-rx" type="number" step="1000" />
             <input id="ic-ry" type="number" step="1000" />
@@ -94,13 +103,55 @@
           </div>
           <div class="section">
             <h2>Perturbations</h2>
-            <label><input id="pert-j2" type="checkbox" /> J2 zonal harmonic</label>
-            <label style="margin-top:3px"><input id="pert-drag" type="checkbox" /> Atmospheric drag (exp)</label>
-            <div id="pert-vehicle" style="display:none; margin-top:4px" class="vec3">
-              <label>mass (kg)<input id="pert-mass" type="number" value="500" step="10" min="1" /></label>
-              <label>area (m²)<input id="pert-area" type="number" value="4" step="0.5" min="0.1" /></label>
-              <label>Cd<input id="pert-cd" type="number" value="2.2" step="0.1" min="0" /></label>
+            <label class="row" style="gap:6px">
+              <input id="pert-j2" type="checkbox" /> Zonal harmonics J2…
+              <select id="pert-jn-max" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px inherit">
+                <option value="2">J2</option>
+                <option value="3">J3</option>
+                <option value="4">J4</option>
+                <option value="5">J5</option>
+                <option value="6">J6</option>
+              </select>
+            </label>
+            <label class="row" style="margin-top:3px;gap:6px">
+              <input id="pert-drag" type="checkbox" /> Atmospheric drag
+              <select id="pert-drag-model" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px inherit">
+                <option value="exponential">exponential</option>
+                <option value="msis">MSIS</option>
+              </select>
+            </label>
+            <label style="margin-top:3px"><input id="pert-srp" type="checkbox" /> Solar radiation pressure</label>
+            <label style="margin-top:3px"><input id="pert-3b-moon" type="checkbox" /> Third body: Moon</label>
+            <label style="margin-top:3px"><input id="pert-3b-sun" type="checkbox" /> Third body: Sun</label>
+            <div id="pert-vehicle" style="display:none; margin-top:4px">
+              <div class="vec3">
+                <label>mass (kg)<input id="pert-mass" type="number" value="500" step="10" min="1" /></label>
+                <label>drag A (m²)<input id="pert-area" type="number" value="4" step="0.5" min="0.1" /></label>
+                <label>Cd<input id="pert-cd" type="number" value="2.2" step="0.1" min="0" /></label>
+              </div>
+              <div class="vec3" style="margin-top:3px">
+                <label>SRP A (m²)<input id="pert-srp-area" type="number" value="4" step="0.5" min="0.1" /></label>
+                <label>Cr<input id="pert-srp-cr" type="number" value="1.5" step="0.1" min="0" max="2" /></label>
+                <span></span>
+              </div>
             </div>
+            <div id="pert-active" style="margin-top:4px; font-family: ui-monospace, monospace; font-size: 10px; opacity:.75"></div>
+          </div>
+          <div class="section">
+            <h2>Solvers</h2>
+            <label>Type
+              <select id="solver-type" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;padding:2px 4px;font:11px ui-monospace, monospace">
+                <option value="hohmann">Hohmann coplanar transfer</option>
+                <option value="lambert">Lambert intercept</option>
+                <option value="multi-burn">Multi-burn NLP (CasADi)</option>
+                <option value="tle">TLE ingest (SGP4)</option>
+              </select>
+            </label>
+            <div id="solver-form" style="margin-top:4px"></div>
+            <div class="row" style="margin-top:4px">
+              <button id="btn-solve" class="primary" style="flex:1">Solve &amp; load into editor</button>
+            </div>
+            <div id="solver-info" style="margin-top:4px;font-family:ui-monospace,monospace;font-size:10px;opacity:.85"></div>
           </div>
           <div class="section">
             <h2>Maneuvers (RIC frame)</h2>
