@@ -16,6 +16,13 @@ export type VehicleSpec = {
   srp_cr?: number;
 };
 export type ManeuverSpec = { t_offset_s: number; dv_ric: Vec3 };
+export type FiniteBurnSpec = {
+  t_start_s: number;
+  duration_s: number;
+  thrust_n: number;
+  isp_s: number;
+  direction_ric: Vec3;
+};
 
 export type PropagateRequest = {
   state: TwoBodyState;
@@ -31,6 +38,8 @@ export type PropagateRequest = {
   vehicle?: VehicleSpec;
   t0_tdb?: number;
   maneuvers?: ManeuverSpec[];
+  finite_burns?: FiniteBurnSpec[];
+  initial_mass_kg?: number;
 };
 
 export type PropagateResponse = {

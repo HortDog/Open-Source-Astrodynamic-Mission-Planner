@@ -17,7 +17,9 @@ from pydantic import BaseModel, Field
 from scipy.integrate import solve_ivp
 
 from oamp.bodies import EARTH, Body
-from oamp.dynamics.perturbations import Perturbation, zonal_harmonics
+from oamp.dynamics.perturbations import Perturbation, compose, zonal_harmonics
+
+_G0 = 9.80665  # standard gravity, m/s²
 
 
 class TwoBodyState(BaseModel):
@@ -34,6 +36,42 @@ class Maneuver(BaseModel):
 
     t_offset_s: float = Field(ge=0.0)
     dv_ric: tuple[float, float, float]  # m/s
+
+
+class FiniteBurn(BaseModel):
+    """Constant-thrust finite burn expressed in the RIC frame.
+
+    The thrust direction is re-projected to inertial at every ODE step so a
+    prograde burn stays prograde as the orbit rotates.  Mass decreases linearly
+    at rate T / (g₀ · Isp).
+    """
+
+    t_start_s: float = Field(ge=0.0)
+    duration_s: float = Field(gt=0.0)
+    thrust_n: float = Field(gt=0.0)
+    isp_s: float = Field(gt=0.0)
+    direction_ric: tuple[float, float, float] = (0.0, 1.0, 0.0)  # default: prograde
+
+
+def _make_thrust_perturbation(
+    thrust_n: float,
+    dir_ric: np.ndarray,
+    m_start: float,
+    mdot: float,
+    t_burn_start: float,
+) -> Perturbation:
+    """Return a Perturbation that adds constant-thrust acceleration.
+
+    Mass decreases linearly; direction rotates with the local RIC frame.
+    """
+    dir_hat = dir_ric / np.linalg.norm(dir_ric)
+
+    def _perturb(t: float, r: np.ndarray, v: np.ndarray) -> np.ndarray:
+        mass = max(m_start - mdot * (t - t_burn_start), 1.0)
+        d_inertial = ric_to_inertial(r, v, dir_hat)
+        return (thrust_n / mass) * d_inertial
+
+    return _perturb
 
 
 def two_body_acceleration(r: np.ndarray, mu: float) -> np.ndarray:
@@ -117,6 +155,8 @@ def propagate_orbit(
     j2_enabled: bool = False,
     perturbation: Perturbation | None = None,
     maneuvers: list[Maneuver] | None = None,
+    finite_burns: list[FiniteBurn] | None = None,
+    initial_mass_kg: float | None = None,
     t0_tdb: float = 0.0,
     rtol: float = 1e-10,
     atol: float = 1e-12,
@@ -140,41 +180,85 @@ def propagate_orbit(
         Optional callable (t, r, v) → a (m/s²). If provided it supersedes the
         `j2_enabled` shortcut and is the only perturbation applied.
     maneuvers
-        Sorted list of impulsive Δv kicks. Each manoeuvre splits the integration
-        into a new arc so the ODE itself remains smooth.
+        Sorted list of impulsive Δv kicks.
+    finite_burns
+        List of finite-burn segments. Each burn must not overlap another.
+        Requires `initial_mass_kg` so propellant consumption can be tracked.
+    initial_mass_kg
+        Wet mass at t=0.  Required when `finite_burns` is non-empty.
     t0_tdb
         Absolute TDB epoch for `t = 0`. Forwarded to perturbations that need
         ephemerides (3rd-body gravity, SRP).
     rtol, atol
         Relative / absolute tolerance for DOP853.
     """
-    # Build the effective perturbation if the caller asked for the J2 shortcut.
+    # Build the effective base perturbation.
     if perturbation is None and j2_enabled and body.j2 != 0.0:
         perturbation = zonal_harmonics(body, n_max=2)
 
     mans = sorted(maneuvers or [], key=lambda m: m.t_offset_s)
+    fburns = sorted(finite_burns or [], key=lambda b: b.t_start_s)
+
     if any(m.t_offset_s > duration_s for m in mans):
         raise ValueError("manoeuvre occurs after the requested propagation end")
+    if fburns and initial_mass_kg is None:
+        raise ValueError("initial_mass_kg is required when finite_burns are specified")
+    for j in range(len(fburns) - 1):
+        if fburns[j].t_start_s + fburns[j].duration_s > fburns[j + 1].t_start_s + 1e-9:
+            raise ValueError("finite burns must not overlap")
 
-    # Split the span at manoeuvre epochs so the ODE stays smooth across each arc.
-    breakpoints = [0.0, *(m.t_offset_s for m in mans), duration_s]
+    # Pre-compute mass state at the start of each burn (accounts for prior burns).
+    current_mass: float = initial_mass_kg or 1.0
+    burn_info: list[tuple[FiniteBurn, float, float]] = []  # (burn, m_start, mdot)
+    for b in fburns:
+        mdot = b.thrust_n / (_G0 * b.isp_s)
+        burn_info.append((b, current_mass, mdot))
+        current_mass = max(current_mass - mdot * b.duration_s, 1.0)
 
-    # Distribute output samples across arcs in proportion to their duration.
+    # Build breakpoints: impulse times + burn starts/ends + endpoints.
+    bp_set: set[float] = {0.0, duration_s}
+    for m in mans:
+        bp_set.add(m.t_offset_s)
+    for b in fburns:
+        bp_set.add(b.t_start_s)
+        bp_set.add(min(b.t_start_s + b.duration_s, duration_s))
+    breakpoints = sorted(bp_set)
+
+    # Distribute output samples across arcs proportionally.
     total = duration_s if duration_s > 0 else 1.0
     arc_samples = [
         max(2, int(round(steps * (breakpoints[i + 1] - breakpoints[i]) / total)))
         for i in range(len(breakpoints) - 1)
     ]
 
+    # Index maneuvers by their breakpoint position for O(1) lookup in the loop.
+    man_at: dict[float, Maneuver] = {m.t_offset_s: m for m in mans}
+
     times_chunks: list[np.ndarray] = []
     state_chunks: list[np.ndarray] = []
     y = np.array([*state.r, *state.v], dtype=float)
-    rhs = _make_rhs(body.mu, perturbation, t0_tdb)
 
     for i, n_samples in enumerate(arc_samples):
         t_a, t_b = breakpoints[i], breakpoints[i + 1]
         if t_b <= t_a:
             continue
+
+        # Check whether this arc falls inside a finite burn.
+        t_mid = (t_a + t_b) / 2.0
+        arc_perturbation = perturbation
+        for b, m_start, mdot in burn_info:
+            if b.t_start_s <= t_mid < b.t_start_s + b.duration_s:
+                thrust_pert = _make_thrust_perturbation(
+                    b.thrust_n,
+                    np.asarray(b.direction_ric, dtype=float),
+                    m_start,
+                    mdot,
+                    b.t_start_s,
+                )
+                arc_perturbation = compose(perturbation, thrust_pert) if perturbation else thrust_pert
+                break
+
+        rhs = _make_rhs(body.mu, arc_perturbation, t0_tdb)
         sol = solve_ivp(
             rhs,
             (t_a, t_b),
@@ -184,6 +268,7 @@ def propagate_orbit(
             rtol=rtol,
             atol=atol,
         )
+
         # Drop the duplicate sample at every internal join.
         if i == 0:
             times_chunks.append(sol.t)
@@ -192,10 +277,10 @@ def propagate_orbit(
             times_chunks.append(sol.t[1:])
             state_chunks.append(sol.y.T[1:])
 
-        # Apply the impulsive manoeuvre at the right-hand boundary, if any.
+        # Apply impulsive manoeuvre at the right-hand boundary, if any.
         y = sol.y[:, -1].copy()
-        if i < len(mans):
-            dv_inertial = ric_to_inertial(y[:3], y[3:], np.asarray(mans[i].dv_ric))
+        if t_b in man_at:
+            dv_inertial = ric_to_inertial(y[:3], y[3:], np.asarray(man_at[t_b].dv_ric))
             y[3:] = y[3:] + dv_inertial
 
     return np.concatenate(times_chunks), np.vstack(state_chunks)

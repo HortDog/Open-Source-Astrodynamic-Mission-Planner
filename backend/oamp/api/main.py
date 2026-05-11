@@ -14,7 +14,7 @@ from oamp import __version__
 from oamp.bodies import EARTH, MOON, SUN
 from oamp.dynamics.integrators import propagate_symplectic
 from oamp.dynamics.launch import LaunchConfig, default_falcon9_like, simulate_launch
-from oamp.dynamics.newtonian import Maneuver, TwoBodyState, propagate_orbit
+from oamp.dynamics.newtonian import FiniteBurn, Maneuver, TwoBodyState, propagate_orbit
 from oamp.dynamics.optimization import optimize_multi_burn
 from oamp.dynamics.perturbations import (
     Vehicle,
@@ -50,6 +50,14 @@ class ManeuverModel(BaseModel):
     dv_ric: tuple[float, float, float]
 
 
+class FiniteBurnModel(BaseModel):
+    t_start_s: float = Field(ge=0)
+    duration_s: float = Field(gt=0)
+    thrust_n: float = Field(gt=0)
+    isp_s: float = Field(gt=0)
+    direction_ric: tuple[float, float, float] = (0.0, 1.0, 0.0)
+
+
 class PropagateRequest(BaseModel):
     state: TwoBodyState
     duration_s: float
@@ -65,6 +73,8 @@ class PropagateRequest(BaseModel):
     vehicle: VehicleModel | None = None
     t0_tdb: float = 0.0
     maneuvers: list[ManeuverModel] = []
+    finite_burns: list[FiniteBurnModel] = []
+    initial_mass_kg: float | None = Field(default=None, gt=0)
     integrator: Literal["dop853", "verlet", "yoshida4"] = "dop853"
     # Drag model: 'exponential' (default, no extra deps) or 'msis' (pymsis).
     drag_model: Literal["exponential", "msis"] = "exponential"
@@ -227,8 +237,16 @@ async def propagate(req: PropagateRequest) -> dict:
     )
     perturbation, active = _build_perturbation(req, body)
     maneuvers = [Maneuver(**m.model_dump()) for m in req.maneuvers]
+    fburns = [FiniteBurn(**b.model_dump()) for b in req.finite_burns]
+    if fburns:
+        active.append(f"finite_burns_{len(fburns)}")
     try:
         if req.integrator in ("verlet", "yoshida4"):
+            if fburns:
+                raise HTTPException(
+                    status_code=400,
+                    detail="finite burns require the dop853 integrator",
+                )
             times, states = propagate_symplectic(
                 req.state,
                 req.duration_s,
@@ -250,6 +268,8 @@ async def propagate(req: PropagateRequest) -> dict:
             j2_enabled=req.j2_enabled and perturbation is None,
             perturbation=perturbation,
             maneuvers=maneuvers,
+            finite_burns=fburns or None,
+            initial_mass_kg=req.initial_mass_kg,
             t0_tdb=req.t0_tdb,
         )
     except Exception as e:

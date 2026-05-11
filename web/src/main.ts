@@ -5,6 +5,7 @@ import {
   propagate,
   runLaunch,
   SimSocket,
+  type FiniteBurnSpec,
   type Vec3,
 } from "./api";
 import { initRenderer, type Renderer } from "./render/scene";
@@ -36,6 +37,7 @@ const INCLINATION_DEG = 51.6;
 const C_DEPART:  [number, number, number] = [0.20, 1.00, 0.30]; // bright phosphor — initial orbit
 const C_TRANSFER:[number, number, number] = [1.00, 0.70, 0.10]; // amber — transfer arc
 const C_ARRIVE:  [number, number, number] = [0.30, 0.70, 1.00]; // cyan — destination orbit
+const C_BURN:    [number, number, number] = [1.00, 0.18, 0.08]; // phosphor red — finite burn
 
 function selectButton(active: HTMLButtonElement): void {
   for (const b of allButtons) {
@@ -85,6 +87,27 @@ function statesToPositions(states: number[][]): Float32Array<ArrayBuffer> {
     out[i * 3 + 2] = s[2]!;
   }
   return out;
+}
+
+/** Override colours for samples that fall inside a finite-burn window.
+ *  Mutates `buf` in-place and returns it. */
+function applyBurnWindows(
+  buf: Float32Array<ArrayBuffer>,
+  times: number[],
+  burns: Array<[number, number]>,   // [t_start, t_end] per burn
+): Float32Array<ArrayBuffer> {
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i]!;
+    for (const [t0, t1] of burns) {
+      if (t >= t0 && t <= t1) {
+        buf[i * 3 + 0] = C_BURN[0];
+        buf[i * 3 + 1] = C_BURN[1];
+        buf[i * 3 + 2] = C_BURN[2];
+        break;
+      }
+    }
+  }
+  return buf;
 }
 
 /** Build a per-vertex colour buffer that paints each segment of the trajectory
@@ -327,13 +350,24 @@ async function showLambert(renderer: Renderer): Promise<void> {
 //  and re-propagate the trajectory.
 // --------------------------------------------------------------------------- //
 
-type ManeuverRow = { t_offset_s: number; dv_r: number; dv_i: number; dv_c: number };
+type ManeuverRow = {
+  kind: "impulsive" | "finite";
+  t_offset_s: number;   // impulse time OR burn start time
+  // impulsive fields
+  dv_r: number; dv_i: number; dv_c: number;
+  // finite burn fields
+  duration_s: number;
+  thrust_n: number;
+  isp_s: number;
+  dir_r: number; dir_i: number; dir_c: number;
+};
 
 const editorState: {
   rx: number; ry: number; rz: number;
   vx: number; vy: number; vz: number;
   duration_s: number;
   steps: number;
+  initial_mass_kg: number;
   maneuvers: ManeuverRow[];
   j2: boolean;
   jn_max: number;
@@ -346,6 +380,7 @@ const editorState: {
   vx: 0, vy: Math.sqrt(MU_EARTH / R0), vz: 0,
   duration_s: 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH),
   steps: 400,
+  initial_mass_kg: 1000,
   maneuvers: [],
   j2: false,
   jn_max: 2,
@@ -384,6 +419,7 @@ function fillIc(): void {
   (document.getElementById("ic-vz") as HTMLInputElement).value = String(editorState.vz);
   (document.getElementById("ic-duration") as HTMLInputElement).value = editorState.duration_s.toFixed(0);
   (document.getElementById("ic-steps") as HTMLInputElement).value = String(editorState.steps);
+  (document.getElementById("ic-mass") as HTMLInputElement).value = String(editorState.initial_mass_kg);
 }
 
 function readIc(): void {
@@ -392,6 +428,7 @@ function readIc(): void {
   editorState.vx = n("ic-vx"); editorState.vy = n("ic-vy"); editorState.vz = n("ic-vz");
   editorState.duration_s = n("ic-duration");
   editorState.steps = parseInt((document.getElementById("ic-steps") as HTMLInputElement).value, 10);
+  editorState.initial_mass_kg = n("ic-mass");
 }
 
 function renderManeuverList(): void {
@@ -402,34 +439,60 @@ function renderManeuverList(): void {
     return;
   }
   editorState.maneuvers.forEach((m, idx) => {
+    const fin = m.kind === "finite";
     const div = document.createElement("div");
     div.className = "maneuver";
     div.innerHTML = `
       <div class="row" style="margin-bottom:3px">
         <strong>#${idx + 1}</strong>
-        <label style="flex:1">t (s)
+        <select data-i="${idx}" data-k="kind" style="font:11px inherit;background:#020a02;color:#80ff60;border:1px solid #2a602a">
+          <option value="impulsive"${!fin ? " selected" : ""}>Impulsive Δv</option>
+          <option value="finite"${fin ? " selected" : ""}>Finite burn</option>
+        </select>
+        <label style="flex:1">t${fin ? "_start" : ""}&nbsp;(s)
           <input data-i="${idx}" data-k="t_offset_s" type="number" step="60" value="${m.t_offset_s}" />
         </label>
         <button data-rm="${idx}" class="danger">×</button>
       </div>
+      ${!fin ? `
       <div class="vec3">
-        <input data-i="${idx}" data-k="dv_r" type="number" step="10" value="${m.dv_r}" placeholder="R" />
-        <input data-i="${idx}" data-k="dv_i" type="number" step="10" value="${m.dv_i}" placeholder="I" />
-        <input data-i="${idx}" data-k="dv_c" type="number" step="10" value="${m.dv_c}" placeholder="C" />
+        <input data-i="${idx}" data-k="dv_r" type="number" step="10" value="${m.dv_r}" placeholder="ΔvR (m/s)" />
+        <input data-i="${idx}" data-k="dv_i" type="number" step="10" value="${m.dv_i}" placeholder="ΔvI (m/s)" />
+        <input data-i="${idx}" data-k="dv_c" type="number" step="10" value="${m.dv_c}" placeholder="ΔvC (m/s)" />
+      </div>` : `
+      <div class="row" style="gap:3px;flex-wrap:wrap">
+        <label style="flex:1">dur&nbsp;(s)<input data-i="${idx}" data-k="duration_s" type="number" step="10" min="1" value="${m.duration_s}" /></label>
+        <label style="flex:1">T&nbsp;(N)<input data-i="${idx}" data-k="thrust_n" type="number" step="100" min="0.001" value="${m.thrust_n}" /></label>
+        <label style="flex:1">Isp&nbsp;(s)<input data-i="${idx}" data-k="isp_s" type="number" step="10" min="1" value="${m.isp_s}" /></label>
       </div>
+      <div class="vec3" style="margin-top:2px">
+        <input data-i="${idx}" data-k="dir_r" type="number" step="0.1" value="${m.dir_r}" placeholder="dirR" />
+        <input data-i="${idx}" data-k="dir_i" type="number" step="0.1" value="${m.dir_i}" placeholder="dirI" />
+        <input data-i="${idx}" data-k="dir_c" type="number" step="0.1" value="${m.dir_c}" placeholder="dirC" />
+      </div>`}
     `;
     list.appendChild(div);
   });
 
-  // Wire up the per-row inputs.
+  // Kind selector — re-render the row on change.
+  list.querySelectorAll("select[data-i]").forEach((el) => {
+    el.addEventListener("change", () => {
+      const i = parseInt(el.getAttribute("data-i")!, 10);
+      editorState.maneuvers[i]!.kind = (el as HTMLSelectElement).value as "impulsive" | "finite";
+      renderManeuverList();
+    });
+  });
+
+  // Numeric inputs — write directly using a string-keyed cast to avoid type noise.
   list.querySelectorAll("input[data-i]").forEach((el) => {
     el.addEventListener("input", () => {
       const i = parseInt(el.getAttribute("data-i")!, 10);
-      const k = el.getAttribute("data-k") as keyof ManeuverRow;
+      const k = el.getAttribute("data-k")!;
       const v = parseFloat((el as HTMLInputElement).value);
-      if (Number.isFinite(v)) editorState.maneuvers[i]![k] = v;
+      if (Number.isFinite(v)) (editorState.maneuvers[i]! as Record<string, unknown>)[k] = v;
     });
   });
+
   list.querySelectorAll("button[data-rm]").forEach((el) => {
     el.addEventListener("click", () => {
       const i = parseInt(el.getAttribute("data-rm")!, 10);
@@ -461,10 +524,21 @@ async function applyEditor(renderer: Renderer): Promise<void> {
         drag_cd: editorState.drag_cd,
       },
     } : {}),
-    maneuvers: editorState.maneuvers.map((m) => ({
-      t_offset_s: m.t_offset_s,
-      dv_ric: [m.dv_r, m.dv_i, m.dv_c],
-    })),
+    maneuvers: editorState.maneuvers
+      .filter((m) => m.kind === "impulsive")
+      .map((m) => ({ t_offset_s: m.t_offset_s, dv_ric: [m.dv_r, m.dv_i, m.dv_c] as [number, number, number] })),
+    ...(editorState.maneuvers.some((m) => m.kind === "finite") ? {
+      finite_burns: editorState.maneuvers
+        .filter((m): m is ManeuverRow & { kind: "finite" } => m.kind === "finite")
+        .map((m): FiniteBurnSpec => ({
+          t_start_s: m.t_offset_s,
+          duration_s: m.duration_s,
+          thrust_n: m.thrust_n,
+          isp_s: m.isp_s,
+          direction_ric: [m.dir_r, m.dir_i, m.dir_c],
+        })),
+      initial_mass_kg: editorState.initial_mass_kg,
+    } : {}),
   });
 
   // Auto-scale the scene to fit the trajectory (max radius * 1.2).
@@ -476,29 +550,43 @@ async function applyEditor(renderer: Renderer): Promise<void> {
   renderer.setSceneScale(Math.max(R0, maxR * 1.2));
   renderer.setCentralBody(R_EARTH);
 
-  // Phase colours by manoeuvre boundaries.
-  const phaseTimes = [0, ...editorState.maneuvers.map((m) => m.t_offset_s)];
+  // Phase colours by manoeuvre boundaries (all events, sorted).
+  const phaseTimes = [0, ...editorState.maneuvers.map((m) => m.t_offset_s).sort((a, b) => a - b)];
   const phaseColors = phaseTimes.map((_, i) => {
     if (i === 0) return C_DEPART;
     if (i === phaseTimes.length - 1) return C_ARRIVE;
     return C_TRANSFER;
   });
+  const burnWindows = editorState.maneuvers
+    .filter((m) => m.kind === "finite")
+    .map((m): [number, number] => [m.t_offset_s, m.t_offset_s + m.duration_s]);
   const colors = phaseColors.length > 1
-    ? colorByPhases(data.t, phaseTimes, phaseColors)
-    : undefined;
+    ? applyBurnWindows(colorByPhases(data.t, phaseTimes, phaseColors), data.t, burnWindows)
+    : burnWindows.length > 0
+      ? applyBurnWindows(
+          colorByPhases(data.t, [0], [C_DEPART]),
+          data.t,
+          burnWindows,
+        )
+      : undefined;
   renderer.drawTrajectory(statesToPositions(data.states), colors);
   setActiveTrajectory(data.t, data.states);
 
   // Summary.
-  const totalDv = editorState.maneuvers
+  const totalImpDv = editorState.maneuvers
+    .filter((m) => m.kind === "impulsive")
     .reduce((s, m) => s + Math.hypot(m.dv_r, m.dv_i, m.dv_c), 0);
+  const finCount = editorState.maneuvers.filter((m) => m.kind === "finite").length;
   const summary = document.getElementById("editor-summary")!;
   summary.innerHTML =
     `samples: ${data.states.length}<br>` +
     `peak |r|: ${(maxR / 1000).toFixed(0)} km<br>` +
-    `Σ |Δv|: ${(totalDv / 1000).toFixed(3)} km/s`;
+    (totalImpDv > 0 ? `Σ imp. |Δv|: ${(totalImpDv / 1000).toFixed(3)} km/s<br>` : "") +
+    (finCount > 0 ? `finite burns: ${finCount}` : "");
   setStatus(
-    `Editor: ${editorState.maneuvers.length} maneuver(s), Σ Δv=${(totalDv / 1000).toFixed(2)} km/s`,
+    `Editor: ${editorState.maneuvers.length} event(s)` +
+    (totalImpDv > 0 ? `, Σ imp. Δv=${(totalImpDv / 1000).toFixed(2)} km/s` : "") +
+    (finCount > 0 ? `, ${finCount} finite burn(s)` : ""),
   );
 }
 
@@ -508,6 +596,7 @@ function resetEditor(): void {
   editorState.duration_s = 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH);
   editorState.steps = 400;
   editorState.maneuvers = [];
+  editorState.initial_mass_kg = 1000;
   editorState.j2 = false; editorState.jn_max = 2;
   editorState.drag = false; editorState.drag_mass_kg = 500;
   editorState.drag_area_m2 = 4.0; editorState.drag_cd = 2.2;
@@ -564,7 +653,13 @@ async function main(): Promise<void> {
       const horizon = editorState.duration_s;
       const last = editorState.maneuvers[editorState.maneuvers.length - 1];
       const next_t = last ? Math.min(horizon * 0.99, last.t_offset_s + 600) : horizon * 0.25;
-      editorState.maneuvers.push({ t_offset_s: next_t, dv_r: 0, dv_i: 50, dv_c: 0 });
+      editorState.maneuvers.push({
+        kind: "impulsive",
+        t_offset_s: next_t,
+        dv_r: 0, dv_i: 50, dv_c: 0,
+        duration_s: 300, thrust_n: 1000, isp_s: 300,
+        dir_r: 0, dir_i: 1, dir_c: 0,
+      });
       renderManeuverList();
     });
   (document.getElementById("btn-apply") as HTMLButtonElement)
