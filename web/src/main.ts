@@ -64,7 +64,10 @@ function updateScrubMarker(idx: number): void {
   const s = activeTraj.states[idx];
   const t = activeTraj.t[idx];
   if (!s || t === undefined) return;
-  activeRenderer.setMarker([s[0]!, s[1]!, s[2]!]);
+  activeRenderer.setMarker(
+    [s[0]!, s[1]!, s[2]!],
+    s.length >= 6 ? [s[3]!, s[4]!, s[5]!] : null,
+  );
   const r = Math.hypot(s[0]!, s[1]!, s[2]!);
   const v = Math.hypot(s[3]!, s[4]!, s[5]!);
   scrubInfo.textContent =
@@ -332,13 +335,45 @@ const editorState: {
   duration_s: number;
   steps: number;
   maneuvers: ManeuverRow[];
+  j2: boolean;
+  jn_max: number;
+  drag: boolean;
+  drag_mass_kg: number;
+  drag_area_m2: number;
+  drag_cd: number;
 } = {
   rx: R0, ry: 0, rz: 0,
   vx: 0, vy: Math.sqrt(MU_EARTH / R0), vz: 0,
   duration_s: 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH),
   steps: 400,
   maneuvers: [],
+  j2: false,
+  jn_max: 2,
+  drag: false,
+  drag_mass_kg: 500,
+  drag_area_m2: 4.0,
+  drag_cd: 2.2,
 };
+
+function fillPerturbations(): void {
+  (document.getElementById("pert-j2") as HTMLInputElement).checked = editorState.j2;
+  (document.getElementById("pert-drag") as HTMLInputElement).checked = editorState.drag;
+  (document.getElementById("pert-mass") as HTMLInputElement).value = String(editorState.drag_mass_kg);
+  (document.getElementById("pert-area") as HTMLInputElement).value = String(editorState.drag_area_m2);
+  (document.getElementById("pert-cd") as HTMLInputElement).value = String(editorState.drag_cd);
+  (document.getElementById("pert-vehicle") as HTMLElement).style.display =
+    editorState.drag ? "grid" : "none";
+}
+
+function readPerturbations(): void {
+  const chk = (id: string) => (document.getElementById(id) as HTMLInputElement).checked;
+  const n = (id: string) => parseFloat((document.getElementById(id) as HTMLInputElement).value);
+  editorState.j2 = chk("pert-j2");
+  editorState.drag = chk("pert-drag");
+  editorState.drag_mass_kg = n("pert-mass");
+  editorState.drag_area_m2 = n("pert-area");
+  editorState.drag_cd = n("pert-cd");
+}
 
 function fillIc(): void {
   (document.getElementById("ic-rx") as HTMLInputElement).value = String(editorState.rx);
@@ -406,6 +441,7 @@ function renderManeuverList(): void {
 
 async function applyEditor(renderer: Renderer): Promise<void> {
   readIc();
+  readPerturbations();
   setStatus("propagating editor scenario…");
   const data = await propagate({
     state: {
@@ -416,6 +452,15 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     steps: editorState.steps,
     mu: MU_EARTH,
     body_radius: R_EARTH,
+    ...(editorState.j2 ? { j2_enabled: true as const, jn_max: editorState.jn_max } : {}),
+    ...(editorState.drag ? {
+      drag: true as const,
+      vehicle: {
+        mass_kg: editorState.drag_mass_kg,
+        drag_area_m2: editorState.drag_area_m2,
+        drag_cd: editorState.drag_cd,
+      },
+    } : {}),
     maneuvers: editorState.maneuvers.map((m) => ({
       t_offset_s: m.t_offset_s,
       dv_ric: [m.dv_r, m.dv_i, m.dv_c],
@@ -463,7 +508,11 @@ function resetEditor(): void {
   editorState.duration_s = 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH);
   editorState.steps = 400;
   editorState.maneuvers = [];
+  editorState.j2 = false; editorState.jn_max = 2;
+  editorState.drag = false; editorState.drag_mass_kg = 500;
+  editorState.drag_area_m2 = 4.0; editorState.drag_cd = 2.2;
   fillIc();
+  fillPerturbations();
   renderManeuverList();
 }
 
@@ -524,6 +573,12 @@ async function main(): Promise<void> {
     });
   (document.getElementById("btn-reset") as HTMLButtonElement)
     .addEventListener("click", () => resetEditor());
+
+  (document.getElementById("pert-drag") as HTMLInputElement)
+    .addEventListener("change", (e) => {
+      (document.getElementById("pert-vehicle") as HTMLElement).style.display =
+        (e.target as HTMLInputElement).checked ? "grid" : "none";
+    });
 
   await showLeo(renderer, false);
 

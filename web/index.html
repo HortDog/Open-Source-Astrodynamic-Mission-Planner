@@ -90,6 +90,16 @@
             </label>
           </div>
           <div class="section">
+            <h2>Perturbations</h2>
+            <label><input id="pert-j2" type="checkbox" /> J2 zonal harmonic</label>
+            <label style="margin-top:3px"><input id="pert-drag" type="checkbox" /> Atmospheric drag (exp)</label>
+            <div id="pert-vehicle" style="display:none; margin-top:4px" class="vec3">
+              <label>mass (kg)<input id="pert-mass" type="number" value="500" step="10" min="1" /></label>
+              <label>area (m²)<input id="pert-area" type="number" value="4" step="0.5" min="0.1" /></label>
+              <label>Cd<input id="pert-cd" type="number" value="2.2" step="0.1" min="0" /></label>
+            </div>
+          </div>
+          <div class="section">
             <h2>Maneuvers (RIC frame)</h2>
             <div id="man-list"></div>
             <button id="btn-add-man" style="margin-top: 6px">+ Add maneuver</button>

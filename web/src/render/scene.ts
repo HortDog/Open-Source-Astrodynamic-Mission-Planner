@@ -12,15 +12,20 @@ export type Renderer = {
     positions: Float32Array<ArrayBuffer>,
     colors?: Float32Array<ArrayBuffer>,
   ): void;
-  /** Place a 3D-cross marker at the given inertial position (m). Pass null
-   *  to hide. Size auto-scales to ~3% of the current scene scale. */
-  setMarker(position: [number, number, number] | null,
-            color?: [number, number, number]): void;
+  /** Place a spacecraft marker at the given inertial position (m). When a
+   *  velocity (m/s) is supplied the three arms align with the RIC frame
+   *  (red=radial, green=in-track, cyan=cross-track). Pass null to hide.
+   *  Size auto-scales to ~3% of the current scene scale. */
+  setMarker(
+    position: [number, number, number] | null,
+    velocity?: [number, number, number] | null,
+    color?: [number, number, number],
+  ): void;
   resize(): void;
 };
 
 const DEPTH_FORMAT = "depth24plus" as const;
-const LINE_WIDTH = 3; // pixels
+const LINE_WIDTH = 6; // pixels
 
 // Uniform layout (80 bytes, 16-byte aligned):
 //   mvp      : mat4x4<f32>  offset  0
@@ -115,8 +120,9 @@ function nullRenderer(kind: "none" | "webgl2-fallback" = "none"): Renderer {
 }
 
 const TRAJ_COLOR:   [number, number, number] = [0.18, 1.00, 0.08]; // bright phosphor
-const BODY_COLOR:   [number, number, number] = [0.04, 0.50, 0.02]; // dim phosphor
-const BODY_EQ_CLR:  [number, number, number] = [0.20, 0.90, 0.10]; // equator highlight
+// Central body rendered in gray
+const BODY_COLOR:   [number, number, number] = [0.50, 0.50, 0.50]; // gray
+const BODY_EQ_CLR:  [number, number, number] = [0.60, 0.60, 0.60]; // equator highlight (lighter gray)
 const AXIS_COLORS: ReadonlyArray<[number, number, number]> = [
   [1.00, 0.06, 0.02], // +X  red
   [0.15, 1.00, 0.10], // +Y  green
@@ -187,9 +193,9 @@ function listToQuads(data: Float32Array<ArrayBuffer>): Float32Array<ArrayBuffer>
 function buildSphere(
   r: number,
   parallels = 18,
-  meridians = 24,
-  ringSegs = 72,
-  meridianSegs = 36,
+  meridians = 36,
+  ringSegs = 72*2,
+  meridianSegs = 36*2,
 ): Float32Array<ArrayBuffer> {
   const verts: number[] = [];
   for (let p = 1; p < parallels; p++) {
@@ -505,10 +511,15 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     writeUniforms();
   }
 
-  const MARKER_COLOR_DEFAULT: [number, number, number] = [1.0, 0.95, 0.25]; // bright yellow
+  // RIC arm colours (match axis palette so they read clearly).
+  const MKR_R: [number, number, number] = [1.00, 0.35, 0.20]; // radial     — red/orange
+  const MKR_I: [number, number, number] = [0.20, 1.00, 0.30]; // in-track   — green
+  const MKR_C: [number, number, number] = [0.20, 0.80, 1.00]; // cross-track — cyan
+  const MKR_DEF: [number, number, number] = [1.0, 0.95, 0.25]; // fallback — yellow
 
   function setMarker(
     position: [number, number, number] | null,
+    velocity?: [number, number, number] | null,
     color?: [number, number, number],
   ): void {
     if (position === null) {
@@ -517,16 +528,47 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
       markerCount = 0;
       return;
     }
-    // 3D cross of three orthogonal line segments centred on `position`.
     const size = 0.03 * sceneScale;
-    const c = color ?? MARKER_COLOR_DEFAULT;
+    const [px, py, pz] = position;
+
+    // Default: inertial ±X/Y/Z cross with a single colour.
+    let r_hat: [number, number, number] = [1, 0, 0];
+    let i_hat: [number, number, number] = [0, 1, 0];
+    let c_hat: [number, number, number] = [0, 0, 1];
+    let cr = color ?? MKR_DEF;
+    let ci = color ?? MKR_DEF;
+    let cc = color ?? MKR_DEF;
+
+    if (velocity != null) {
+      const [vx, vy, vz] = velocity;
+      const rMag = Math.hypot(px, py, pz);
+      if (rMag > 0) {
+        r_hat = [px / rMag, py / rMag, pz / rMag];
+        // Ĉ = r × v / |r × v|
+        const hx = py * vz - pz * vy;
+        const hy = pz * vx - px * vz;
+        const hz = px * vy - py * vx;
+        const hMag = Math.hypot(hx, hy, hz);
+        if (hMag > 0) {
+          c_hat = [hx / hMag, hy / hMag, hz / hMag];
+          // Î = Ĉ × R̂
+          i_hat = [
+            c_hat[1] * r_hat[2] - c_hat[2] * r_hat[1],
+            c_hat[2] * r_hat[0] - c_hat[0] * r_hat[2],
+            c_hat[0] * r_hat[1] - c_hat[1] * r_hat[0],
+          ];
+          cr = MKR_R; ci = MKR_I; cc = MKR_C;
+        }
+      }
+    }
+
     const lineList = new Float32Array([
-      position[0] - size, position[1], position[2], c[0], c[1], c[2],
-      position[0] + size, position[1], position[2], c[0], c[1], c[2],
-      position[0], position[1] - size, position[2], c[0], c[1], c[2],
-      position[0], position[1] + size, position[2], c[0], c[1], c[2],
-      position[0], position[1], position[2] - size, c[0], c[1], c[2],
-      position[0], position[1], position[2] + size, c[0], c[1], c[2],
+      px, py, pz,  cr[0], cr[1], cr[2],
+      px + r_hat[0] * size, py + r_hat[1] * size, pz + r_hat[2] * size,  cr[0], cr[1], cr[2],
+      px, py, pz,  ci[0], ci[1], ci[2],
+      px + i_hat[0] * size, py + i_hat[1] * size, pz + i_hat[2] * size,  ci[0], ci[1], ci[2],
+      px, py, pz,  cc[0], cc[1], cc[2],
+      px + c_hat[0] * size, py + c_hat[1] * size, pz + c_hat[2] * size,  cc[0], cc[1], cc[2],
     ]);
     const quads = listToQuads(lineList);
     [markerBuf, markerCount] = uploadThick(markerBuf, quads);
