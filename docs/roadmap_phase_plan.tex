@@ -5,7 +5,7 @@
 \usepackage{longtable}
 \usepackage{array}
 \usepackage{tabularx}
-\usepackage{xcolor}
+\usepackage[table]{xcolor}
 \usepackage{hyperref}
 \usepackage{titlesec}
 \usepackage{enumitem}
@@ -40,7 +40,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\textcolor{dimgreen}{OAMP — Development Roadmap}}
-\fancyhead[R]{\small\textcolor{dimgreen}{Phases 2 \& 3}}
+\fancyhead[R]{\small\textcolor{dimgreen}{Phases 2--5}}
 \fancyfoot[C]{\small\textcolor{dimgreen}{\thepage}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\headrule}{\hbox to\headwidth{\color{dimgreen}\leaders\hrule height \headrulewidth\hfill}}
@@ -112,7 +112,21 @@ solar radiation pressure, third-body perturbations, TLE ingest, $\Delta v$
 manoeuvre planning, a Lambert/CasADi trajectory optimizer, live WebSocket
 streaming, and a full manoeuvre-editor frontend.
 
-\textbf{Phase~3} adds post-Newtonian (PN) corrections and a full General
+\textbf{Phase~3} (\emph{shipped}) brings every backend capability to the
+sandbox frontend (J2--J6, drag with MSIS, SRP, third-body Moon/Sun, finite
+burns, four solver panels covering Hohmann/Lambert/multi-burn NLP/TLE), adds
+a central-body selector with full Moon support (canonical $\mu$, $R$, $J_n$,
+$\omega$), wires SPICE ephemerides into the renderer as a secondary-body
+wireframe, and ties it together with an end-to-end cislunar TLI demo
+(Lambert + J2 + third-body Moon + finite-burn-ready spacecraft).
+
+\textbf{Phase~4} extends the dynamics layer with the circular-restricted
+three-body problem (CR3BP), Lagrange-point computation, periodic-orbit
+families with differential correction, invariant manifold tubes, and
+rotating-frame visualization --- the foundations for low-energy / weak
+stability boundary (WSB) transfers and ballistic capture into lunar orbit.
+
+\textbf{Phase~5} adds post-Newtonian (PN) corrections and a full General
 Relativity (GR) geodesic integrator on the DSX/Brumberg--Kopejkin BCRS metric,
 with tetrad thrust modelling and a Ray-backed spacetime metric pre-bake cache
 for performance.
@@ -348,10 +362,326 @@ multi-day propagations.
 \end{center}
 
 % ============================================================
-%  PHASE 3
+%  PHASE 3 — Sandbox Integration & Lunar System (SHIPPED)
 % ============================================================
 \newpage
-\section{Phase 3 — Post-Newtonian \& General Relativity}
+\section{Phase 3 — Sandbox Integration \& Lunar System}
+
+\subsection{Goals}
+
+Make every backend capability visible and editable in the WebGPU sandbox,
+extend the central-body abstraction to the Moon, and use SPICE ephemerides
+to render the Moon at its inertial position --- producing an end-to-end
+cislunar transfer demo that exercises the full Phase~2 stack
+(higher-order gravity, third-body perturbation, finite burns, Lambert).
+
+\subsection{3.1 — Perturbation editor expansion (shipped)}
+
+The maneuver editor sidebar gained a full Perturbations section exposing
+every flag the backend already accepts:
+
+\begin{itemize}[leftmargin=*]
+  \item Zonal harmonics dropdown ($J_2$\,\dots\,$J_6$) bound to
+        \texttt{PropagateRequest.jn\_max}
+  \item Atmospheric drag with model selector
+        (\texttt{exponential} \,|\, \texttt{msis}); vehicle inputs share
+        a single section
+  \item Solar radiation pressure (cannonball) with $C_r$, area
+  \item Third-body checkboxes for Moon and Sun
+        (forwarded as \texttt{third\_body: ["MOON", "SUN"]})
+  \item Live ``active forces'' readout displaying what the server actually
+        applied (\texttt{response.perturbations[]})
+\end{itemize}
+
+\subsection{3.2 — Solver panel (shipped)}
+
+A single sidebar section with a solver-type dropdown and a dynamically
+rendered form:
+
+\begin{center}
+\rowcolors{2}{rowalt}{white}
+\begin{tabularx}{\textwidth}{>{\bfseries}l X X}
+  \rowcolor{tabhead}\color{white}\textbf{Solver}
+    & \color{white}\textbf{Inputs}
+    & \color{white}\textbf{Loads into editor} \\
+  Hohmann       & $r_1$, $r_2$, $\mu$
+                & 2 impulsive maneuvers, IC at LEO \\
+  Lambert       & $\vec r_1$, $\vec r_2$, TOF
+                & IC = $(\vec r_1, \vec v_1^{\text{Lambert}})$, duration $=$ TOF \\
+  Multi-burn NLP & $N$ epochs, target $\vec r_f, \vec v_f$
+                & Δv list + convergence stats (inertial; displayed) \\
+  TLE           & NORAD ID \emph{or} line1/line2 (+ \texttt{at\_utc})
+                & ECI state at epoch, period auto-set \\
+\end{tabularx}
+\end{center}
+
+Each solver writes results back to \texttt{editorState} and auto-propagates,
+so the user sees the orbit immediately.
+
+\subsection{3.3 — Central-body selector + lunar constants}
+
+\texttt{PropagateRequest.body\_name: "EARTH" | "MOON" | "SUN"} resolves to
+the canonical \texttt{Body} constant (correct $\mu$, $R$, $J_n$, $\omega$);
+the legacy \texttt{mu}/\texttt{body\_radius} fields are kept for back-compat.
+Lunar zonal harmonics $J_2$\,\dots\,$J_6$ are populated from the GRGM1200A
+low-order solution. The frontend dropdown repopulates the initial state
+with a sensible low circular orbit at the body's default altitude and
+clears drag/SRP (which require an atmosphere).
+
+\subsection{3.4 — Moon rendering}
+
+The WebGPU renderer gained \texttt{setSecondaryBody(position, radius, color)}:
+a low-resolution wireframe sphere translated to the inertial Moon position.
+A new endpoint \texttt{POST /spice/ephemeris} accepts a list of TDB-second
+offsets from a UTC epoch and returns the corresponding body states ---
+batching what \texttt{/spice/state} did for a single time. The frontend
+samples Moon positions at $\sim$60 points across the active trajectory and
+advances the Moon as the time scrubber moves (binary-search lookup).
+
+\subsection{3.5 — Cislunar TLI demo}
+
+A top-bar button that ties the whole stack together:
+
+\begin{enumerate}[leftmargin=*]
+  \item Query Moon position at the demo epoch from SPICE
+  \item Solve Lambert: $200\,$km LEO $\to$ Moon position in $3.5\,$d
+  \item Load TLI Δv as an impulsive RIC maneuver
+  \item Propagate with $J_2$ + third-body Moon
+  \item Render trajectory + Moon wireframe + apse markers
+\end{enumerate}
+
+Graceful degradation: if SPICE kernels aren't loaded the status bar prompts
+the user to run \texttt{pixi run kernels} rather than failing silently.
+
+\subsection{3.6 — Polish}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Camera}: adaptive near/far ($0.005 \cdot d \dots 500 \cdot d$)
+        keeps \texttt{depth24plus} precision usable across the whole zoom
+        range; wheel-zoom band expanded to
+        $10^{-3} \dots 10^4$ scene units
+  \item \textbf{Camera target switching}: orbit-camera target switchable
+        between central body / spacecraft / Moon via a footer dropdown
+  \item \textbf{Apse markers}: tiny magenta/yellow crosses at periapsis /
+        apoapsis. Detection via $\dot r$ zero-crossings (not triplet
+        extremum) and suppressed when
+        $(r_\text{max} - r_\text{min}) / \bar r < 10^{-3}$ to avoid spurious
+        markers on near-circular orbits
+  \item \textbf{Altitude chart}: $|\vec r|(t)$ polyline in the footer with
+        a vertical cursor that tracks the time scrubber
+\end{itemize}
+
+\subsection{3.x — Known limitations}
+
+\begin{itemize}[leftmargin=*]
+  \item Multi-burn NLP returns inertial $\Delta v$; the editor speaks RIC,
+        so it displays results rather than round-tripping. A future
+        \texttt{dv\_inertial} field on the Maneuver model would close this.
+  \item Moon ephemeris is sampled only at the configured demo epoch
+        (\texttt{2026-01-01T00:00:00}); a per-trajectory configurable
+        $t_0$ is a small follow-up.
+  \item Frame is always inertial J2000. Phase~4 introduces the
+        synodic-frame option needed for periodic-orbit analysis.
+\end{itemize}
+
+\subsection{3 — Status \& tests}
+
+All 43 backend tests pass; ruff clean; frontend type-check clean.
+
+% ============================================================
+%  PHASE 4 — CR3BP, Lagrange points, low-energy transfers
+% ============================================================
+\newpage
+\section{Phase 4 — Rotating Frames, CR3BP \& Low-Energy Transfers}
+
+\subsection{Goals}
+
+Add the dynamics, frames, and visualization needed to design and visualize
+\emph{low-energy} (manifold-guided) transfers and \emph{ballistic capture}
+trajectories. The Newtonian path remains the fast default; CR3BP is opt-in
+via a frame selector and a separate propagator family.
+
+The deliverable is: ``the user can pick an Earth--Moon halo orbit by energy,
+see the unstable manifold tube reaching Earth, and choose an initial state
+on that tube that ballistically captures into a low lunar orbit.''
+
+\subsection{Pillar A --- Frame infrastructure}
+
+\subsubsection{4.1 Frame definitions}
+
+A \texttt{Frame} dataclass in \texttt{backend/oamp/frames.py} (new file)
+with time-dependent rotation + translation:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{J2000}: inertial (current default)
+  \item \textbf{EM\_SYNODIC}: rotating with the Earth--Moon line, origin at
+        the system barycenter --- the Moon and Earth are stationary
+  \item \textbf{SE\_SYNODIC}: rotating with the Sun--Earth line; required
+        for Weak-Stability-Boundary transfers
+  \item \textbf{BCI\_EARTH} / \textbf{BCI\_MOON}: body-centered J2000
+  \item \textbf{BCR\_*}: body-centered rotating, surface-relative
+\end{itemize}
+
+Each conversion is a $3{\times}3$ rotation $R(t)$ plus an origin
+translation $\Delta\vec r(t)$, plus the velocity correction
+$\vec v' = R(\vec v - \boldsymbol\omega \times \vec r) - \dot{\Delta\vec r}$.
+
+\subsubsection{4.2 Frame-aware propagator and visualization}
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{PropagateRequest.output\_frame} --- backend transforms the
+        result before returning
+  \item \texttt{POST /transform/states} --- standalone batch transform
+        endpoint
+  \item Frontend frame selector dropdown coupled to \texttt{output\_frame}
+        and to the renderer's ``what is at origin''
+\end{itemize}
+
+\subsection{Pillar B --- CR3BP dynamics}
+
+\subsubsection{4.3 CR3BP propagator}
+
+Non-dimensional equations of motion in the synodic frame with mass ratio
+$\mu = m_2/(m_1+m_2)$.  In file
+\texttt{backend/oamp/dynamics/cr3bp.py}.  JAX-friendly RHS so we can JIT
+and \texttt{vmap} for batch trajectory studies (this links to the GPU
+acceleration work):
+
+\begin{equation}
+  \begin{aligned}
+    \ddot x &= \phantom{-}2\dot y + x - (1-\mu)\frac{x+\mu}{r_1^3} - \mu\frac{x-1+\mu}{r_2^3} \\
+    \ddot y &= -2\dot x + y - (1-\mu)\frac{y}{r_1^3} - \mu\frac{y}{r_2^3} \\
+    \ddot z &= - (1-\mu)\frac{z}{r_1^3} - \mu\frac{z}{r_2^3}
+  \end{aligned}
+\end{equation}
+
+\subsubsection{4.4 Lagrange points + Jacobi constant}
+
+\begin{itemize}[leftmargin=*]
+  \item Newton solve for collinear $L_1, L_2, L_3$ from the quintic;
+        exact for triangular $L_4, L_5$
+  \item \texttt{jacobi\_constant(state, $\mu$)} as a pseudo-energy invariant;
+        conserved to $\sim 10^{-10}$ over a closed periodic orbit, useful
+        as an integration-error gauge
+  \item Endpoint \texttt{GET /cr3bp/lagrange?mu=...}
+\end{itemize}
+
+\subsubsection{4.5 Periodic orbit families (hardest single item)}
+
+\begin{itemize}[leftmargin=*]
+  \item Planar Lyapunov around $L_1, L_2$ --- linearised initial guess
+        + differential correction (Newton on the period-crossing residual)
+  \item 3D halo orbits --- Richardson 3rd-order analytical seed, then
+        differential correction
+  \item Vertical Lyapunov (out-of-plane)
+  \item \textbf{Family continuation}: pseudo-arclength on energy/period to
+        walk along a family
+  \item Endpoint
+        \texttt{POST /cr3bp/periodic-orbit \{type, L, energy\}}
+\end{itemize}
+
+\subsubsection{4.6 Invariant manifolds}
+
+\begin{itemize}[leftmargin=*]
+  \item Monodromy matrix $\Phi(T)$ around a periodic orbit
+  \item Eigendecomposition $\to$ stable ($|\lambda|<1$) and unstable
+        ($|\lambda|>1$) directions
+  \item Integrate the stable manifold backward and the unstable manifold
+        forward from a sampling of points along the orbit
+        ($\sim$100 trajectories typical)
+  \item Endpoint
+        \texttt{POST /cr3bp/manifold \{orbit, direction, branch, duration\}}
+\end{itemize}
+
+\subsection{Pillar C --- Low-energy transfers}
+
+\subsubsection{4.7 Manifold-guided transfers}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Earth--Moon $L_1/L_2$ transit}: depart LEO $\to$ unstable
+        manifold of $L_1/L_2$ halo $\to$ arrive at the lunar SOI without
+        a capture burn
+  \item \textbf{WSB (Belbruno) transfer}: depart Earth $\to$ Sun--Earth
+        manifold tube $\to$ swing through Sun--Earth $L_1/L_2$ $\to$ arrive
+        at Earth--Moon $L_2$ manifold $\to$ ballistic capture into lunar
+        orbit. $\sim$90--110~d TOF, $\sim$10--20\% $\Delta v$ savings vs.\
+        Hohmann (Hiten, GRAIL, LADEE precedent).
+  \item Endpoint
+        \texttt{POST /transfer/low-energy \{depart, target, type\}}
+\end{itemize}
+
+\subsubsection{4.8 Ballistic-capture diagnostic}
+
+Sample many initial conditions near the lunar $L_1/L_2$ manifolds, propagate
+backward in the BCR4BP (Sun perturbation included), classify each as
+``captured'' (lunar bound for $\ge 3$ months) or ``escapes''. The boundary
+between these classes is the \textbf{Weak Stability Boundary}.  Visualize as
+a colour-coded map in the synodic frame --- the iconic Belbruno plot.
+
+\subsection{Pillar C visualization}
+
+\subsubsection{4.9 Frontend integration}
+
+\begin{itemize}[leftmargin=*]
+  \item Frame selector coupled to \texttt{output\_frame} on every propagate
+        call; renderer ``central body'' becomes the barycenter when synodic
+  \item $L_1$\,\dots\,$L_5$ markers (small $\times$ glyphs) drawn at their
+        synodic-frame positions
+  \item Periodic-orbit catalogue browser --- preset halo/Lyapunov entries
+        by energy, click to load
+  \item Manifold tube rendering: many semi-transparent trajectories,
+        colour-coded by stable/unstable and $\pm$ branch
+  \item Live Jacobi-constant readout in the footer (sanity check; drift
+        diagnoses integration error or 4-body perturbation)
+\end{itemize}
+
+\subsection{Sequencing}
+
+\begin{center}
+\begin{tabular}{ll}
+  \toprule
+  4.1 \,\&\, 4.3 & foundational, independent, $\sim$2--3~d each \\
+  4.2 (frame propagator) & needs 4.1; $\sim$1~d \\
+  4.4 (Lagrange + Jacobi) & needs 4.3; $\sim$1~d \\
+  4.5 (periodic orbits) & needs 4.4; $\sim$5--7~d (DC robustness) \\
+  4.6 (manifolds) & needs 4.5; $\sim$3--4~d \\
+  4.7 (transfers) & needs 4.6 + 4.2; $\sim$3~d \\
+  4.8 (WSB diagnostic) & needs 4.6 + BCR4BP RHS; $\sim$4--5~d \\
+  4.9 (visualization) & threads through all of the above; $\sim$3--4~d \\
+  \midrule
+  \textbf{Total} & \textbf{$\sim$5--6 weeks} \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Hard tradeoffs decided up front}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{CR3BP vs full ephemeris}: do all family computation in
+        pure CR3BP; refine into the SPICE-ephemeris model as a forward-
+        shooting follow-up. Pure CR3BP first.
+  \item \textbf{JAX vs SciPy for batch manifolds}: build on SciPy DOP853
+        first to match the existing code path; expose a JAX
+        \texttt{lax.scan} + \texttt{vmap} fast path under the \texttt{gpu}
+        pixi feature in a follow-up.
+  \item \textbf{Synodic-frame UI complexity}: do the inertial$\to$synodic
+        transform on the backend (\texttt{output\_frame} in the request);
+        renderer stays a dumb pipeline.
+  \item \textbf{Discoverability}: add a small glossary section in the
+        sidebar covering Jacobi, halo, manifold, WSB --- these terms are
+        unusable to anyone outside the field.
+  \item \textbf{BCR4BP scope}: only used by 4.8 (ballistic capture
+        diagnostic). Don't try to do periodic orbits or generic
+        propagation in BCR4BP --- CR3BP is enough everywhere else.
+\end{itemize}
+
+% ============================================================
+%  PHASE 5  (originally drafted as Phase 3; renumbered after the actual
+%  Phase 3 (sandbox integration + Moon) and Phase 4 (CR3BP) were inserted
+%  ahead of it.  Content unchanged.)
+% ============================================================
+\newpage
+\section{Phase 5 — Post-Newtonian \& General Relativity}
 
 \subsection{Goals}
 
@@ -557,77 +887,79 @@ kernel is updated the cache is considered stale and must be rebuilt.
 \newpage
 \section{Overall Timeline}
 
-\begin{center}
-\begin{tikzpicture}[
-  bar/.style={rectangle, rounded corners=2pt, minimum height=10pt, text=white,
-              font=\scriptsize\bfseries, inner xsep=4pt},
-  label/.style={font=\scriptsize, anchor=west},
-  week/.style={font=\tiny, color=gray},
-]
-  \def\W{0.42} % cm per week
-  \def\H{0.55} % row height cm
-
-  % --- grid ---
-  \foreach \w in {0,2,...,24} {
-    \draw[gray!30, very thin] (\w*\W, 0) -- (\w*\W, -11*\H);
-    \node[week] at (\w*\W, 0.25) {W\w};
-  }
-
-  % Phase 2 bars
-  \foreach \row/\start/\len/\col/\txt in {
-    1/0/3/dimgreen/{2a Drag + J\textsubscript{n} + SRP},
-    2/0/1/dimgreen/{2b TLE Ingest},
-    3/3/3/dimgreen!80!black/{2c Lambert + CasADi},
-    4/0/1/dimgreen/{2d WebSocket},
-    5/3/4/dimgreen!60!black/{2e Frontend}
-  } {
-    \fill[\col, bar] (\start*\W, -\row*\H+\H*0.15)
-      rectangle (\start*\W+\len*\W*2, -\row*\H+\H*0.85)
-      node[midway] {\txt};
-  }
-
-  % Phase 3 bars
-  \foreach \row/\start/\len/\col/\txt in {
-    7/12/2/accentcyan!70!black/{3a PN Corrections},
-    8/14/4/accentcyan!80!black/{3b GR Integrator},
-    9/18/1/accentcyan/{3c Tetrad Thrust},
-    10/18/3/accentcyan!60!black/{3d Ray Metric Cache},
-    11/18/2/accentcyan!50!black/{3e Frontend}
-  } {
-    \fill[\col, bar] (\start*\W, -\row*\H+\H*0.15)
-      rectangle (\start*\W+\len*\W*2, -\row*\H+\H*0.85)
-      node[midway, text=white] {\txt};
-  }
-
-  % Phase labels
-  \draw[dimgreen, thick] (-0.1, -0.1) rectangle (12*\W+0.1, -6*\H-0.1);
-  \node[dimgreen, font=\small\bfseries, anchor=north west] at (-0.1, -0.15)
-    {Phase 2};
-  \draw[accentcyan!80!black, thick] (-0.1, -6.5*\H) rectangle (24*\W+0.1, -11.5*\H);
-  \node[accentcyan!80!black, font=\small\bfseries, anchor=north west]
-    at (-0.1, -6.55*\H) {Phase 3};
-
-\end{tikzpicture}
-\end{center}
-
-\vspace{1em}
+\subsection{Phase comparison}
 
 \begin{center}
-\begin{tabular}{L{4cm} C{2.5cm} C{2.5cm} C{2.5cm}}
-  \toprule
-  & \textbf{Phase 1} & \textbf{Phase 2} & \textbf{Phase 3} \\
-  \midrule
-  Physics model    & Newton + J2     & Newton + J2--J6 + drag + SRP + 3B
-                                     & PN + full GR \\
-  Integrator       & DOP853          & DOP853 + SABA2  & DOP853 + RKN \\
-  Optimiser        & ---             & Lambert + CasADi NLP & CasADi + JAX \\
-  Heavy compute    & ---             & Ray (streaming)  & Ray (metric bake) \\
-  Frontend         & 3 demo scenes   & Manoeuvre editor + scrubber
-                                     & GR/PN/Newton compare \\
-  Estimated effort & \emph{done}     & 9--12 weeks     & 10--12 weeks \\
-  \bottomrule
-\end{tabular}
+\rowcolors{2}{rowalt}{white}
+\begin{tabularx}{\textwidth}{L{2.6cm} X X X X X}
+  \rowcolor{tabhead}
+    & \color{white}\textbf{P1}
+    & \color{white}\textbf{P2}
+    & \color{white}\textbf{P3}
+    & \color{white}\textbf{P4}
+    & \color{white}\textbf{P5} \\
+  Physics
+    & Newton + $J_2$
+    & Newton + $J_2$\,\dots\,$J_6$ + drag + SRP + 3B
+    & = P2 (no new physics)
+    & CR3BP + BCR4BP
+    & PN1 + full GR (BCRS) \\
+  Frames
+    & J2000
+    & J2000
+    & + body selector (Earth/Moon)
+    & + EM/SE synodic + BCR
+    & BCRS \\
+  Integrator
+    & DOP853
+    & + Verlet + Yoshida-4
+    & = P2
+    & + symplectic SABA on CR3BP
+    & + RKN for geodesics \\
+  Optimisers
+    & ---
+    & Lambert + Hohmann + CasADi NLP
+    & all four exposed in sidebar; + TLE ingest
+    & + manifold-shooting + diff.\ correction
+    & + GR-aware shooting \\
+  Frontend
+    & 3 demo scenes
+    & Maneuver editor + scrubber
+    & Solver panel, Moon render, cislunar demo, apse markers, altitude chart, camera targeting
+    & Frame selector, $L_n$ markers, periodic-orbit catalogue, manifold tubes, WSB map
+    & GR/PN/Newton compare, residual panel, metric heatmap \\
+  Heavy compute
+    & ---
+    & Ray streaming
+    & ---
+    & JAX \texttt{vmap} for batch manifolds (\texttt{gpu} feature)
+    & Ray (metric pre-bake) \\
+  Status
+    & \emph{shipped}
+    & \emph{shipped}
+    & \emph{shipped} (3.1--3.6)
+    & planned, $\sim$5--6 weeks
+    & planned, $\sim$10--12 weeks \\
+\end{tabularx}
 \end{center}
+
+\subsection{Critical path}
+
+\begin{center}
+\begin{minipage}{0.85\textwidth}
+\begin{verbatim}
+   P1 ──► P2 ──► P3 ──┬──► P4 ──► low-energy + ballistic capture
+                      │
+                      └──► P5 ──► GR / precision science
+\end{verbatim}
+\end{minipage}
+\end{center}
+
+Phases 4 and 5 are independent of each other.  Phase 4 specialises the
+dynamics towards three-body geometry (mission design, manifold transfers);
+Phase 5 specialises towards relativistic effects (precision navigation,
+geodesy).  They can be developed in parallel by different contributors once
+the Phase 3 foundations are locked in.
 
 % ============================================================
 %  CONVENTIONS REFERENCE

@@ -11,7 +11,12 @@
       "Bash(pixi run python -X utf8 -c ' *)",
       "Bash(npm run *)",
       "Bash(pixi run *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(git stash *)",
+      "Bash(grep -n \"\\\\\\\\\\\\\\\\usepackage\" docs/roadmap_phase2_3.tex)",
+      "Bash(where pdflatex *)",
+      "Bash(where xelatex *)",
+      "Bash(where latexmk *)"
     ]
   }
 }

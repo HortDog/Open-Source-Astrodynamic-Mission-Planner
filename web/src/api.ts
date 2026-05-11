@@ -202,6 +202,30 @@ export async function spiceState(
   return r.json();
 }
 
+export type SpiceEphemeris = {
+  et0: number;
+  r: Vec3[];
+  v: Vec3[];
+  frame: string;
+  observer: string;
+};
+
+export async function spiceEphemeris(
+  target: string,
+  t0_utc: string,
+  t_offsets_s: number[],
+  observer = "EARTH",
+  frame = "J2000",
+): Promise<SpiceEphemeris> {
+  const r = await fetch("/api/spice/ephemeris", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target, t0_utc, t_offsets_s, observer, frame }),
+  });
+  if (!r.ok) throw new Error(`spice ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
 export type WSMessage = Record<string, unknown>;
 
 export class SimSocket {

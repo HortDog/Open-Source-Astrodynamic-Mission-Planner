@@ -169,6 +169,19 @@
         <span id="status">init…</span>
         <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
         <span id="scrub-info"></span>
+        <svg id="alt-chart" width="200" height="30" xmlns="http://www.w3.org/2000/svg"
+             style="display:block;background:#020a02;border:1px solid #1a3a1a">
+          <polyline id="alt-line" points="" fill="none" stroke="#80ff60" stroke-width="1" />
+          <line id="alt-cursor" x1="0" y1="0" x2="0" y2="30" stroke="#ffba40" stroke-width="1" />
+          <text id="alt-label" x="3" y="10" font-size="9" fill="#80ff60" font-family="ui-monospace,monospace"></text>
+        </svg>
+        <label style="display:flex;align-items:center;gap:3px">cam
+          <select id="cam-target" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
+            <option value="origin">central body</option>
+            <option value="craft">spacecraft</option>
+            <option value="moon">moon</option>
+          </select>
+        </label>
       </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

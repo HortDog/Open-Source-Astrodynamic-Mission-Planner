@@ -116,6 +116,16 @@ class SpiceStateRequest(BaseModel):
     frame: str = "J2000"
 
 
+class SpiceEphemerisRequest(BaseModel):
+    """Batched ephemeris query: list of TDB-second offsets from `t0_utc`."""
+
+    target: str
+    t0_utc: str
+    t_offsets_s: list[float]
+    observer: str = "EARTH"
+    frame: str = "J2000"
+
+
 class TleRequest(BaseModel):
     """Submit a TLE directly (e.g. for an internal catalogue). For Celestrak
     fetches use ``GET /tle?norad=...`` instead."""
@@ -451,6 +461,32 @@ async def spice_state(req: SpiceStateRequest) -> dict:
         "frame": req.frame,
         "observer": req.observer,
     }
+
+
+@app.post("/spice/ephemeris")
+async def spice_ephemeris(req: SpiceEphemerisRequest) -> dict:
+    """Query `target` ephemeris at `t0_utc + dt` for each dt in `t_offsets_s`.
+
+    Returns one (r, v) pair per offset.  Limit: 5_000 samples per request to
+    keep response sizes manageable."""
+    if len(req.t_offsets_s) > 5_000:
+        raise HTTPException(status_code=400, detail="too many samples (max 5000)")
+    try:
+        from oamp import spice
+        from oamp.timescales import utc_iso_to_et
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"SPICE unavailable: {e}") from e
+    try:
+        et0 = utc_iso_to_et(req.t0_utc)
+        rs: list[list[float]] = []
+        vs: list[list[float]] = []
+        for dt in req.t_offsets_s:
+            r, v = spice.body_state(req.target, et0 + float(dt), req.observer, req.frame)
+            rs.append(r.tolist())
+            vs.append(v.tolist())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"et0": et0, "r": rs, "v": vs, "frame": req.frame, "observer": req.observer}
 
 
 # --------------------------------------------------------------------------- #

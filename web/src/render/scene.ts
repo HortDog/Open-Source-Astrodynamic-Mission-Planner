@@ -28,6 +28,12 @@ export type Renderer = {
     radius: number,
     color?: [number, number, number],
   ): void;
+  /** Point the orbit camera at the given world-space target (m). The camera
+   *  yaw/pitch/distance still orbit it. Pass null to recenter on (0,0,0). */
+  setCameraTarget(target: [number, number, number] | null): void;
+  /** Draw apse markers (periapsis/apoapsis crosses) along the active orbit.
+   *  Pass an empty array to clear. */
+  setApses(apses: ReadonlyArray<{ position: [number, number, number]; isPeriapsis: boolean }>): void;
   resize(): void;
 };
 
@@ -123,6 +129,8 @@ function nullRenderer(kind: "none" | "webgl2-fallback" = "none"): Renderer {
     drawTrajectory:   () => {},
     setMarker:        () => {},
     setSecondaryBody: () => {},
+    setCameraTarget:  () => {},
+    setApses:         () => {},
     resize:           () => {},
   };
 }
@@ -347,6 +355,8 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   let solidBodyCount  = 0;
   let secBodyBuf:     GPUBuffer | null = null;
   let secBodyCount    = 0;
+  let apsesBuf:       GPUBuffer | null = null;
+  let apsesCount      = 0;
   let axesBuf:        GPUBuffer | null = null;
   let axesCount       = 0;
   let markerBuf:      GPUBuffer | null = null;
@@ -357,6 +367,9 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
 
   let yaw = 0.6, pitch = 0.55, distance = 3.0, aspect = 1;
   let sceneScale = 1;
+  // Camera target in world space (meters).  The orbit camera revolves around
+  // this point; (0,0,0) follows the central body.
+  let camTarget: [number, number, number] = [0, 0, 0];
 
   const proj = mat4(), view = mat4(), scaleMat = mat4(), viewScale = mat4(), mvp = mat4();
   const uData = new Float32Array(UNIFORM_FLOATS);
@@ -370,9 +383,23 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   function writeUniforms(): void {
     const cp = Math.cos(pitch), sp = Math.sin(pitch);
     const cy = Math.cos(yaw),   sy = Math.sin(yaw);
-    const eye: [number, number, number] = [distance * cp * sy, distance * cp * cy, distance * sp];
-    perspective(proj, (50 * Math.PI) / 180, aspect, 0.01, 100);
-    lookAt(view, eye, [0, 0, 0], [0, 0, 1]);
+    // Target in scaled NDC-ish units; eye sits at orbit offset around it.
+    const tx = camTarget[0] / sceneScale;
+    const ty = camTarget[1] / sceneScale;
+    const tz = camTarget[2] / sceneScale;
+    const eye: [number, number, number] = [
+      tx + distance * cp * sy,
+      ty + distance * cp * cy,
+      tz + distance * sp,
+    ];
+    // Adapt near/far to the current zoom so we keep ~5 orders of magnitude of
+    // useful depth precision regardless of how close/far the camera is.  A
+    // fixed wide band (e.g. 1e-5..1e6) makes depth24plus alias badly — the
+    // wireframe and the trajectory start z-fighting.
+    const near = Math.max(distance * 0.005, 1e-4);
+    const far  = Math.max(distance * 500, 100);
+    perspective(proj, (50 * Math.PI) / 180, aspect, near, far);
+    lookAt(view, eye, [tx, ty, tz], [0, 0, 1]);
     multiply(viewScale, view, scaleMat);
     multiply(mvp, proj, viewScale);
     uData.set(mvp, 0);
@@ -482,6 +509,14 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
       pass.draw(secBodyCount);
     }
 
+    // 5c. Apse markers — always on top so they read against the trajectory.
+    if (apsesBuf && apsesCount > 0) {
+      pass.setPipeline(thickAlwaysPipeline);
+      pass.setBindGroup(0, thickAlwaysBG);
+      pass.setVertexBuffer(0, apsesBuf);
+      pass.draw(apsesCount);
+    }
+
     // 4. Axes: always on top.
     if (axesBuf && axesCount > 0) {
       pass.setPipeline(thickAlwaysPipeline);
@@ -517,6 +552,45 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
 
     const solidData = buildSolidSphere(radiusMeters * 0.995); // slightly smaller to avoid z-fighting with wireframe
     [solidBodyBuf, solidBodyCount] = uploadRaw(solidBodyBuf, solidData, 3);
+  }
+
+  function setCameraTarget(target: [number, number, number] | null): void {
+    camTarget = target ? [target[0], target[1], target[2]] : [0, 0, 0];
+    writeUniforms();
+  }
+
+  const APSE_PERI: [number, number, number] = [1.00, 0.30, 1.00]; // magenta — periapsis
+  const APSE_APO:  [number, number, number] = [1.00, 1.00, 0.50]; // pale yellow — apoapsis
+
+  function setApses(
+    apses: ReadonlyArray<{ position: [number, number, number]; isPeriapsis: boolean }>,
+  ): void {
+    if (apses.length === 0) {
+      apsesBuf?.destroy();
+      apsesBuf = null; apsesCount = 0;
+      return;
+    }
+    const size = 0.015 * sceneScale;
+    // Each apse = 3 orthogonal segments × 2 verts × 6 floats.
+    const out = new Float32Array(apses.length * 3 * 2 * 6);
+    let o = 0;
+    for (const { position: [px, py, pz], isPeriapsis } of apses) {
+      const c = isPeriapsis ? APSE_PERI : APSE_APO;
+      type Seg = [[number, number, number], [number, number, number]];
+      const segs: [Seg, Seg, Seg] = [
+        [[px - size, py, pz], [px + size, py, pz]],
+        [[px, py - size, pz], [px, py + size, pz]],
+        [[px, py, pz - size], [px, py, pz + size]],
+      ];
+      for (const [a, b] of segs) {
+        out[o++] = a[0]; out[o++] = a[1]; out[o++] = a[2];
+        out[o++] = c[0]; out[o++] = c[1]; out[o++] = c[2];
+        out[o++] = b[0]; out[o++] = b[1]; out[o++] = b[2];
+        out[o++] = c[0]; out[o++] = c[1]; out[o++] = c[2];
+      }
+    }
+    const quads = listToQuads(out);
+    [apsesBuf, apsesCount] = uploadThick(apsesBuf, quads);
   }
 
   const SEC_BODY_COLOR: [number, number, number] = [0.55, 0.55, 0.55]; // moon-grey
@@ -641,7 +715,9 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   canvas.addEventListener("pointercancel", endDrag);
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    distance = Math.max(0.5, Math.min(50, distance * Math.exp(e.deltaY * 0.001)));
+    // Wider zoom band — surface-skim (1e-3 units ≈ 6 km when sceneScale=R⊕)
+    // up to far-field (1e4 units ≈ system-scale).
+    distance = Math.max(1e-3, Math.min(1e4, distance * Math.exp(e.deltaY * 0.001)));
     writeUniforms();
   }, { passive: false });
 
@@ -649,5 +725,9 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   window.addEventListener("resize", resize);
   requestAnimationFrame(frame);
 
-  return { kind: "webgpu", setSceneScale, setCentralBody, drawTrajectory, setMarker, setSecondaryBody, resize };
+  return {
+    kind: "webgpu",
+    setSceneScale, setCentralBody, drawTrajectory, setMarker, setSecondaryBody,
+    setCameraTarget, setApses, resize,
+  };
 }

@@ -6,6 +6,7 @@ import {
   propagate,
   runLaunch,
   SimSocket,
+  spiceEphemeris,
   spiceState,
   tleByNorad,
   tleParse,
@@ -28,6 +29,7 @@ const btnEditor = document.getElementById("btn-editor") as HTMLButtonElement;
 const editor = document.getElementById("editor") as HTMLElement;
 const scrub = document.getElementById("scrub") as HTMLInputElement;
 const scrubInfo = document.getElementById("scrub-info") as HTMLSpanElement;
+const camTargetSel = document.getElementById("cam-target") as HTMLSelectElement;
 const allButtons = [btnLeo, btnLaunch, btnLeoJ2, btnHohmann, btnLambert, btnCislunar];
 
 const setStatus = (s: string) => { status.textContent = s; };
@@ -65,12 +67,117 @@ function selectButton(active: HTMLButtonElement): void {
 type ActiveTrajectory = { t: number[]; states: number[][] };
 let activeTraj: ActiveTrajectory | null = null;
 let activeRenderer: Renderer | null = null;
+let latestMoonR: Vec3 | null = null;
+let latestCraftR: Vec3 = [0, 0, 0];
+// Decimated Moon track over the current trajectory.  Sampled at `moonTrackT`
+// (seconds from t0); positions in inertial m relative to Earth.
+let moonTrackT: number[] | null = null;
+let moonTrackR: Vec3[] | null = null;
+
+function refreshCameraTarget(): void {
+  if (!activeRenderer) return;
+  const choice = camTargetSel.value;
+  if (choice === "craft") {
+    activeRenderer.setCameraTarget(latestCraftR);
+  } else if (choice === "moon" && latestMoonR) {
+    activeRenderer.setCameraTarget(latestMoonR);
+  } else {
+    activeRenderer.setCameraTarget(null);
+  }
+}
+
+camTargetSel.addEventListener("change", refreshCameraTarget);
+
+/** Find apsides: zero-crossings of the radial velocity ṙ = (r·v)/|r|.
+ *  More robust than triplet-extremum detection — won't pepper a near-circular
+ *  orbit with markers from floating-point wobble.  Returns nothing for orbits
+ *  whose radial span is below ~0.1% of the mean (effectively circular). */
+function findApses(
+  states: number[][],
+): Array<{ position: Vec3; isPeriapsis: boolean }> {
+  const out: Array<{ position: Vec3; isPeriapsis: boolean }> = [];
+  if (states.length < 3) return out;
+  // Skip markers when the orbit is too circular to have a meaningful apse.
+  let rMin = Infinity, rMax = 0;
+  for (const s of states) {
+    const r = Math.hypot(s[0]!, s[1]!, s[2]!);
+    if (r < rMin) rMin = r;
+    if (r > rMax) rMax = r;
+  }
+  if (rMax - rMin < 1e-3 * (rMax + rMin) * 0.5) return out;
+
+  const rdot = (s: number[]) => {
+    const r = Math.hypot(s[0]!, s[1]!, s[2]!);
+    return (s[0]! * s[3]! + s[1]! * s[4]! + s[2]! * s[5]!) / r;
+  };
+  let prev = rdot(states[0]!);
+  for (let i = 1; i < states.length; i++) {
+    const cur = rdot(states[i]!);
+    const s = states[i]!;
+    // ṙ goes negative → positive : periapsis just crossed.
+    // ṙ goes positive → negative : apoapsis just crossed.
+    if (prev < 0 && cur >= 0) {
+      out.push({ position: [s[0]!, s[1]!, s[2]!], isPeriapsis: true });
+    } else if (prev > 0 && cur <= 0) {
+      out.push({ position: [s[0]!, s[1]!, s[2]!], isPeriapsis: false });
+    }
+    prev = cur;
+  }
+  return out;
+}
+
+const ALT_W = 200, ALT_H = 30;
+let altMinR = 0, altMaxR = 1;
+
+/** Plot |r|(t) into the footer SVG.  X spans the full trajectory; Y spans
+ *  [r_min, r_max] padded by 5% so the apsides aren't flush against the edges. */
+function drawAltitudeChart(times: number[], states: number[][]): void {
+  const line = document.getElementById("alt-line") as unknown as SVGPolylineElement;
+  if (!line || states.length < 2) {
+    if (line) line.setAttribute("points", "");
+    return;
+  }
+  const rs = states.map((s) => Math.hypot(s[0]!, s[1]!, s[2]!));
+  altMinR = Math.min(...rs);
+  altMaxR = Math.max(...rs);
+  const pad = Math.max((altMaxR - altMinR) * 0.05, 1);
+  const yLo = altMinR - pad, yHi = altMaxR + pad;
+  const t0 = times[0]!, tN = times[times.length - 1]!;
+  const tSpan = Math.max(tN - t0, 1);
+  const pts: string[] = new Array(rs.length);
+  for (let i = 0; i < rs.length; i++) {
+    const x = ((times[i]! - t0) / tSpan) * ALT_W;
+    const y = ALT_H - ((rs[i]! - yLo) / (yHi - yLo)) * ALT_H;
+    pts[i] = `${x.toFixed(1)},${y.toFixed(1)}`;
+  }
+  line.setAttribute("points", pts.join(" "));
+}
+
+function updateAltitudeCursor(idx: number): void {
+  if (!activeTraj) return;
+  const cursor = document.getElementById("alt-cursor") as unknown as SVGLineElement;
+  const label = document.getElementById("alt-label");
+  if (!cursor) return;
+  const N = activeTraj.t.length;
+  if (N < 2) return;
+  const t0 = activeTraj.t[0]!, tN = activeTraj.t[N - 1]!;
+  const tSpan = Math.max(tN - t0, 1);
+  const x = ((activeTraj.t[idx]! - t0) / tSpan) * ALT_W;
+  cursor.setAttribute("x1", x.toFixed(1));
+  cursor.setAttribute("x2", x.toFixed(1));
+  if (label) {
+    label.textContent =
+      `|r|: ${(altMinR / 1000).toFixed(0)}–${(altMaxR / 1000).toFixed(0)} km`;
+  }
+}
 
 function setActiveTrajectory(t: number[], states: number[][]): void {
   activeTraj = { t, states };
   scrub.min = "0";
   scrub.max = String(Math.max(0, states.length - 1));
   scrub.value = "0";
+  if (activeRenderer) activeRenderer.setApses(findApses(states));
+  drawAltitudeChart(t, states);
   updateScrubMarker(0);
 }
 
@@ -79,14 +186,29 @@ function updateScrubMarker(idx: number): void {
   const s = activeTraj.states[idx];
   const t = activeTraj.t[idx];
   if (!s || t === undefined) return;
+  latestCraftR = [s[0]!, s[1]!, s[2]!];
   activeRenderer.setMarker(
-    [s[0]!, s[1]!, s[2]!],
+    latestCraftR,
     s.length >= 6 ? [s[3]!, s[4]!, s[5]!] : null,
   );
+  if (camTargetSel.value === "craft") activeRenderer.setCameraTarget(latestCraftR);
+  // Animated Moon: pick the precomputed sample nearest to the current time.
+  if (moonTrackT && moonTrackR && moonTrackR.length > 0) {
+    let lo = 0, hi = moonTrackT.length - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (moonTrackT[mid]! <= t) lo = mid; else hi = mid;
+    }
+    const pick = (t - moonTrackT[lo]!) < (moonTrackT[hi]! - t) ? lo : hi;
+    latestMoonR = moonTrackR[pick]!;
+    activeRenderer.setSecondaryBody(latestMoonR, BODY.MOON.radius);
+    if (camTargetSel.value === "moon") activeRenderer.setCameraTarget(latestMoonR);
+  }
   const r = Math.hypot(s[0]!, s[1]!, s[2]!);
   const v = Math.hypot(s[3]!, s[4]!, s[5]!);
   scrubInfo.textContent =
     `t=${t.toFixed(0)} s · |r|=${(r / 1000).toFixed(0)} km · |v|=${(v / 1000).toFixed(2)} km/s`;
+  updateAltitudeCursor(idx);
 }
 
 scrub.addEventListener("input", () => updateScrubMarker(parseInt(scrub.value, 10)));
@@ -719,14 +841,29 @@ async function applyEditor(renderer: Renderer): Promise<void> {
   // Fetch and render Moon position (best-effort — SPICE kernels may be absent).
   if (willRenderMoon) {
     try {
-      const moonState = await spiceState("MOON", "2026-01-01T00:00:00", "EARTH", "J2000");
-      renderer.setSecondaryBody(moonState.r, BODY.MOON.radius);
+      // Sample Moon ephemeris at ~60 points across the trajectory so the
+      // scrubber-driven update is smooth without overloading SPICE.
+      const N = data.t.length;
+      const target_samples = Math.min(60, N);
+      const stride = Math.max(1, Math.floor(N / target_samples));
+      const offsets: number[] = [];
+      for (let i = 0; i < N; i += stride) offsets.push(data.t[i]!);
+      if (offsets[offsets.length - 1] !== data.t[N - 1]) offsets.push(data.t[N - 1]!);
+
+      const eph = await spiceEphemeris("MOON", "2026-01-01T00:00:00", offsets, "EARTH", "J2000");
+      moonTrackT = offsets;
+      moonTrackR = eph.r;
+      latestMoonR = eph.r[0]!;
+      renderer.setSecondaryBody(latestMoonR, BODY.MOON.radius);
     } catch {
+      moonTrackT = null; moonTrackR = null; latestMoonR = null;
       renderer.setSecondaryBody(null, 0);
     }
   } else {
+    moonTrackT = null; moonTrackR = null; latestMoonR = null;
     renderer.setSecondaryBody(null, 0);
   }
+  refreshCameraTarget();
 
   // Phase colours by manoeuvre boundaries (all events, sorted).
   const phaseTimes = [0, ...editorState.maneuvers.map((m) => m.t_offset_s).sort((a, b) => a - b)];
