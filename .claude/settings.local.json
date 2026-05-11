@@ -10,7 +10,8 @@
       "Bash(pixi run python -c ' *)",
       "Bash(pixi run python -X utf8 -c ' *)",
       "Bash(npm run *)",
-      "Bash(pixi run *)"
+      "Bash(pixi run *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

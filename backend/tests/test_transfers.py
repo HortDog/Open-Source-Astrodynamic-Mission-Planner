@@ -67,6 +67,34 @@ def test_lambert_rejects_degenerate_180():
         lambert_universal((r1, 0.0, 0.0), (-r2, 0.0, 0.0), 3000.0)
 
 
+def test_hohmann_full_sequence_lands_on_target_orbit():
+    """Run the full Hohmann sequence as propagated by the engine. Final state
+    must be on a near-circular orbit at the target radius."""
+    from oamp.dynamics.newtonian import Maneuver, propagate_orbit
+
+    r1 = EARTH.radius + 400e3
+    r2 = 42_164e3
+    ho = hohmann_transfer(r1, r2)
+    T_leo = 2 * math.pi * math.sqrt(r1**3 / EARTH.mu)
+    v_leo = math.sqrt(EARTH.mu / r1)
+
+    _, states = propagate_orbit(
+        TwoBodyState(r=(r1, 0.0, 0.0), v=(0.0, v_leo, 0.0)),
+        duration_s=T_leo + ho.transfer_time_s + 100.0,
+        steps=400,
+        maneuvers=[
+            Maneuver(t_offset_s=T_leo, dv_ric=(0.0, ho.dv1_m_s, 0.0)),
+            Maneuver(t_offset_s=T_leo + ho.transfer_time_s, dv_ric=(0.0, ho.dv2_m_s, 0.0)),
+        ],
+    )
+    # Final state should be at apoapsis side, ~r2 radius, speed ≈ v_circ(r2).
+    r_final = np.linalg.norm(states[-1, :3])
+    v_final = np.linalg.norm(states[-1, 3:])
+    v_circ = math.sqrt(EARTH.mu / r2)
+    assert abs(r_final - r2) / r2 < 1e-3, f"final r={r_final:.0f}, target {r2:.0f}"
+    assert abs(v_final - v_circ) / v_circ < 1e-3, f"v={v_final:.2f}, v_circ={v_circ:.2f}"
+
+
 def test_lambert_arbitrary_geometry():
     """Pick a 120° transfer and verify Lambert + propagation closes the loop."""
     r1 = (EARTH.radius + 500e3, 0.0, 0.0)
