@@ -109,8 +109,10 @@ def main() -> int:
         size = dest.stat().st_size
         if expected:
             if actual != expected:
-                print(f"[err] {name}: sha256 mismatch after download "
-                      f"(got {actual}, want {expected})", file=sys.stderr)
+                print(
+                    f"[err] {name}: sha256 mismatch after download (got {actual}, want {expected})",
+                    file=sys.stderr,
+                )
                 failures.append(name)
             else:
                 print(f"[ok ] {name} (verified, {size:,} bytes)")

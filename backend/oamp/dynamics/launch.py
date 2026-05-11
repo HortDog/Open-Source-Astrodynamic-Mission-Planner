@@ -29,9 +29,9 @@ from scipy.integrate import solve_ivp
 from oamp.bodies import EARTH
 
 # Earth atmosphere — crude exponential model; good enough through ~80 km.
-RHO_0 = 1.225        # kg/m^3 sea-level
+RHO_0 = 1.225  # kg/m^3 sea-level
 SCALE_HEIGHT = 8500  # m
-G0 = 9.80665         # standard gravity, used for Isp -> exhaust velocity
+G0 = 9.80665  # standard gravity, used for Isp -> exhaust velocity
 
 
 class Vehicle(BaseModel):
@@ -57,8 +57,8 @@ class LaunchConfig(BaseModel):
 class LaunchResult(BaseModel):
     t: list[float]
     states: list[list[float]]  # [x, y, z, vx, vy, vz, mass] per row
-    burnout_index: int           # index in t/states where main engine cut off
-    circularization_index: int   # index where the apoapsis Δv was applied
+    burnout_index: int  # index in t/states where main engine cut off
+    circularization_index: int  # index where the apoapsis Δv was applied
     burnout_time_s: float
     circularization_dv_m_s: float
     final_apoapsis_km: float
@@ -201,7 +201,7 @@ def simulate_launch(config: LaunchConfig, max_time_s: float = 1500.0) -> LaunchR
         return r_norm - R - 1.0
 
     crashed.terminal = True  # type: ignore[attr-defined]
-    crashed.direction = -1   # type: ignore[attr-defined]
+    crashed.direction = -1  # type: ignore[attr-defined]
 
     y0 = np.array([R, 0.0, 0.0, 0.0, 0.0, 0.0, initial_mass])
     t_eval = np.linspace(0.0, end_t, max(200, int(end_t / 2)))
@@ -218,7 +218,7 @@ def simulate_launch(config: LaunchConfig, max_time_s: float = 1500.0) -> LaunchR
         max_step=2.0,
     )
 
-    ascent_states = sol.y.T   # (N, 7)
+    ascent_states = sol.y.T  # (N, 7)
     ascent_times = sol.t
 
     # Find the index nearest to burnout time.
@@ -249,8 +249,14 @@ def simulate_launch(config: LaunchConfig, max_time_s: float = 1500.0) -> LaunchR
     dt_to_apo = _time_to_apoapsis(coast_start_state[:3], coast_start_state[3:6], mu)
     coast_t_eval = np.linspace(0.0, dt_to_apo, max(60, int(dt_to_apo / 5.0)))
     coast_sol = solve_ivp(
-        _kepler_rhs, (0.0, dt_to_apo), coast_start_state,
-        t_eval=coast_t_eval, args=(mu,), method="DOP853", rtol=1e-10, atol=1e-12,
+        _kepler_rhs,
+        (0.0, dt_to_apo),
+        coast_start_state,
+        t_eval=coast_t_eval,
+        args=(mu,),
+        method="DOP853",
+        rtol=1e-10,
+        atol=1e-12,
     )
     coast_states = coast_sol.y.T
     coast_times = coast_sol.t + coast_start_t
@@ -270,8 +276,14 @@ def simulate_launch(config: LaunchConfig, max_time_s: float = 1500.0) -> LaunchR
     period = 2 * math.pi * math.sqrt(float(np.linalg.norm(r_apo)) ** 3 / mu)
     orbit_t_eval = np.linspace(0.0, period, 360)
     orbit_sol = solve_ivp(
-        _kepler_rhs, (0.0, period), apo_state,
-        t_eval=orbit_t_eval, args=(mu,), method="DOP853", rtol=1e-10, atol=1e-12,
+        _kepler_rhs,
+        (0.0, period),
+        apo_state,
+        t_eval=orbit_t_eval,
+        args=(mu,),
+        method="DOP853",
+        rtol=1e-10,
+        atol=1e-12,
     )
     orbit_states = orbit_sol.y.T
     orbit_times = orbit_sol.t + coast_times[-1]
@@ -307,7 +319,7 @@ def default_falcon9_like() -> LaunchConfig:
         vehicle=Vehicle(
             dry_mass_kg=12_000,
             prop_mass_kg=200_000,
-            thrust_n=8_200_000,   # ~9 Merlin equivalents
+            thrust_n=8_200_000,  # ~9 Merlin equivalents
             isp_s=320,
             drag_area_m2=10.5,
             drag_cd=0.30,

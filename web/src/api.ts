@@ -8,22 +8,84 @@ export async function fetchHealth(): Promise<Health> {
 
 export type Vec3 = [number, number, number];
 export type TwoBodyState = { r: Vec3; v: Vec3 };
-export type PropagateResponse = { t: number[]; states: number[][] };
+export type VehicleSpec = {
+  mass_kg: number;
+  drag_area_m2?: number;
+  drag_cd?: number;
+  srp_area_m2?: number;
+  srp_cr?: number;
+};
+export type ManeuverSpec = { t_offset_s: number; dv_ric: Vec3 };
 
-export async function propagate(req: {
+export type PropagateRequest = {
   state: TwoBodyState;
   duration_s: number;
   steps?: number;
   mu?: number;
-  j2_enabled?: boolean;
   body_radius?: number;
-}): Promise<PropagateResponse> {
+  j2_enabled?: boolean;
+  jn_max?: number;          // 2..6 — pass 6 for J2..J6 full set
+  drag?: boolean;
+  srp?: boolean;
+  third_body?: string[];    // ["MOON", "SUN", ...]
+  vehicle?: VehicleSpec;
+  t0_tdb?: number;
+  maneuvers?: ManeuverSpec[];
+};
+
+export type PropagateResponse = {
+  t: number[];
+  states: number[][];
+  perturbations?: string[];
+};
+
+export async function propagate(req: PropagateRequest): Promise<PropagateResponse> {
   const r = await fetch("/api/propagate", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(req),
   });
   if (!r.ok) throw new Error(`propagate ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type HohmannResponse = {
+  dv1_m_s: number;
+  dv2_m_s: number;
+  dv_total_m_s: number;
+  transfer_time_s: number;
+  semi_major_axis_m: number;
+};
+
+export async function optimizeHohmann(req: {
+  r1_m: number; r2_m: number; mu?: number;
+}): Promise<HohmannResponse> {
+  const r = await fetch("/api/optimize/hohmann", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`hohmann ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type LambertResponse = {
+  v1_m_s: Vec3;
+  v2_m_s: Vec3;
+  iterations: number;
+  converged: boolean;
+  transfer_time_s: number;
+};
+
+export async function optimizeLambert(req: {
+  r1_m: Vec3; r2_m: Vec3; tof_s: number; mu?: number; prograde?: boolean;
+}): Promise<LambertResponse> {
+  const r = await fetch("/api/optimize/lambert", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`lambert ${r.status}: ${await r.text()}`);
   return r.json();
 }
 

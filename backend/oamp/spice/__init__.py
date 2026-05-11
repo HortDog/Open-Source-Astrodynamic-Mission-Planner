@@ -34,8 +34,7 @@ def furnsh_dir(directory: Path | None = None) -> list[Path]:
     d = directory or kernels_dir()
     if not d.is_dir():
         raise FileNotFoundError(
-            f"SPICE kernels directory not found: {d}. "
-            "Run `pixi run kernels` to fetch them."
+            f"SPICE kernels directory not found: {d}. Run `pixi run kernels` to fetch them."
         )
 
     loaded_now: list[Path] = []
