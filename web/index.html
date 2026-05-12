@@ -372,6 +372,19 @@
       <footer>
         <span id="status">init…</span>
         <button id="btn-cancel" title="Cancel running propagation">cancel</button>
+        <button id="btn-play" title="Play / pause mission animation"
+                style="background:#061406;color:#80ff60;border:1px solid #2a602a;padding:2px 8px;border-radius:3px;cursor:pointer;font:11px ui-monospace,monospace;min-width:28px">▶</button>
+        <select id="play-speed" title="Playback rate (sim seconds per real second)"
+                style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
+          <option value="1">×1</option>
+          <option value="10">×10</option>
+          <option value="100">×100</option>
+          <option value="1000">×1k</option>
+          <option value="10000" selected>×10k</option>
+          <option value="100000">×100k</option>
+          <option value="1000000">×1M</option>
+          <option value="10000000">×10M</option>
+        </select>
         <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
         <span id="scrub-info"></span>
         <label style="display:flex;align-items:center;gap:3px;font-size:10px">chart

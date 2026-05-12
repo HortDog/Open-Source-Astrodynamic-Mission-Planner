@@ -297,6 +297,7 @@ export async function initRenderer(canvas) {
     const thickLePipeline = mkThickPipeline("fs", "less-equal"); // visible, solid
     const thickGtPipeline = mkThickPipeline("fs_dot", "greater"); // occluded, dotted
     const thickAlwaysPipeline = mkThickPipeline("fs", "always"); // axes on top
+    const thickLeDashedPipeline = mkThickPipeline("fs_dot", "less-equal"); // visible, dashed — future trajectory
     const uniformBuf = device.createBuffer({
         size: UNIFORM_FLOATS * 4,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -309,8 +310,11 @@ export async function initRenderer(canvas) {
     const thickLeBG = mkBG(thickLePipeline);
     const thickGtBG = mkBG(thickGtPipeline);
     const thickAlwaysBG = mkBG(thickAlwaysPipeline);
+    const thickLeDashedBG = mkBG(thickLeDashedPipeline);
     let trajBuf = null;
     let trajCount = 0;
+    let futureBuf = null;
+    let futureCount = 0;
     let bodyBuf = null;
     let bodyCount = 0;
     let solidBodyBuf = null;
@@ -473,6 +477,17 @@ export async function initRenderer(canvas) {
             pass.setVertexBuffer(0, trajBuf);
             pass.draw(trajCount);
         }
+        // 5a. Future trajectory: dashed on both visible and occluded passes.
+        if (futureBuf && futureCount > 0) {
+            pass.setPipeline(thickGtPipeline);
+            pass.setBindGroup(0, thickGtBG);
+            pass.setVertexBuffer(0, futureBuf);
+            pass.draw(futureCount);
+            pass.setPipeline(thickLeDashedPipeline);
+            pass.setBindGroup(0, thickLeDashedBG);
+            pass.setVertexBuffer(0, futureBuf);
+            pass.draw(futureCount);
+        }
         // 5b. Secondary body (Moon at its inertial position) — always visible.
         if (secBodyBuf && secBodyCount > 0) {
             pass.setPipeline(thickAlwaysPipeline);
@@ -512,9 +527,18 @@ export async function initRenderer(canvas) {
         device.queue.submit([enc.finish()]);
         requestAnimationFrame(frame);
     }
-    function drawTrajectory(positions, colors) {
+    function drawTrajectory(positions, colors, future) {
         const quads = stripToQuads(positions, colors, TRAJ_COLOR);
         [trajBuf, trajCount] = uploadThick(trajBuf, quads);
+        // The future buffer is rendered dashed; ≥ 2 vertices (6 floats) needed
+        // to make a line strip. Below that we treat it as empty.
+        if (future && future.positions.length >= 6) {
+            const fq = stripToQuads(future.positions, future.colors, TRAJ_COLOR);
+            [futureBuf, futureCount] = uploadThick(futureBuf, fq);
+        }
+        else {
+            [futureBuf, futureCount] = uploadThick(futureBuf, new Float32Array(0));
+        }
     }
     function setCentralBody(radiusMeters) {
         const wireQuads = listToQuads(buildSphere(radiusMeters));

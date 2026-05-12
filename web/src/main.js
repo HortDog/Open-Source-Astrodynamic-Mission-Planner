@@ -30,6 +30,8 @@ const fileLoadMission = document.getElementById("file-load-mission");
 const btnExportTraj = document.getElementById("btn-export-traj");
 const spiceBadge = document.getElementById("spice-badge");
 const chartKindSel = document.getElementById("chart-kind");
+const btnPlay = document.getElementById("btn-play");
+const playSpeedSel = document.getElementById("play-speed");
 const setStatus = (s) => { status.textContent = s; };
 const showBanner = (msg) => { banner.textContent = msg; banner.classList.add("show"); };
 // J2000 epoch in UTC milliseconds (2000-01-01T11:58:55.816Z).
@@ -65,9 +67,15 @@ const BODY = {
     MOON: { mu: 4.9048695e12, radius: 1_737_400, default_alt_m: 100_000, label: "Moon" },
 };
 // Earth--Moon system constants used by the EM_SYNODIC view-frame transform.
-// Mirror of backend `oamp.dynamics.cr3bp.EM_MU` / `EM_LENGTH_M`.
+// Mirror of backend `oamp.dynamics.cr3bp.EM_MU` / `EM_LENGTH_M` / `EM_MEAN_MOTION_RAD_S`.
 const EM_MU_FRONTEND = BODY.MOON.mu / (BODY.EARTH.mu + BODY.MOON.mu);
 const EM_LENGTH_M = 384_400_000;
+// Non-dim CR3BP time has units of 1/n (mean motion). For the Earth--Moon
+// system n ≈ 2.66e-6 rad/s, so one non-dim unit ≈ 375 700 s ≈ 4.35 days.
+// Multiply non-dim t by EM_TIME_UNIT_S to get SI seconds before feeding it to
+// the scrubber / playback engine.
+const EM_MEAN_MOTION_RAD_S = 2.661699e-6;
+const EM_TIME_UNIT_S = 1 / EM_MEAN_MOTION_RAD_S;
 // Phase colours (phosphor palette + accents for distinct transfer phases).
 const C_DEPART = [0.20, 1.00, 0.30]; // bright phosphor — initial orbit
 const C_TRANSFER = [1.00, 0.70, 0.10]; // amber — transfer arc
@@ -201,6 +209,116 @@ function setActiveTrajectory(t, states) {
     drawAltitudeChart(t, states);
     updateScrubMarker(0);
 }
+// --------------------------------------------------------------------------- //
+//  Past/future trajectory split — the bit of the orbit before the current
+//  scrub index renders as a solid line; everything after renders dashed.
+//  Cached positions/colors are uploaded once by `paintTrajectory` and then
+//  re-split on every scrub change without a re-derivation cost.
+// --------------------------------------------------------------------------- //
+let cachedPositions = null;
+let cachedColors = null;
+function drawTrajectorySplit(idx) {
+    if (!activeRenderer || !cachedPositions)
+        return;
+    const N = cachedPositions.length / 3;
+    if (N < 2) {
+        activeRenderer.drawTrajectory(cachedPositions, cachedColors ?? undefined);
+        return;
+    }
+    // Clamp idx and define the cut. Past gets [0..idx+1), future gets [idx..N).
+    // The shared vertex at `idx` glues the two halves so there is no visual gap.
+    const i = Math.min(Math.max(idx, 0), N - 1);
+    const past = cachedPositions.subarray(0, (i + 1) * 3);
+    const future = cachedPositions.subarray(i * 3);
+    const pastCols = cachedColors
+        ? cachedColors.subarray(0, (i + 1) * 3)
+        : undefined;
+    const futureCols = cachedColors
+        ? cachedColors.subarray(i * 3)
+        : undefined;
+    const futureArg = { positions: future };
+    if (futureCols)
+        futureArg.colors = futureCols;
+    activeRenderer.drawTrajectory(past, pastCols, futureArg);
+}
+/** Paint a full trajectory and cache the buffers so subsequent scrub /
+ *  playback events can re-split without re-deriving the positions. */
+function paintTrajectory(positions, colors) {
+    cachedPositions = positions;
+    cachedColors = colors ?? null;
+    // Initial paint shows the whole orbit as solid — split kicks in on scrub /
+    // play. We achieve that by drawing with idx = N − 1 (past = full, future = ∅).
+    if (activeRenderer) {
+        const N = positions.length / 3;
+        drawTrajectorySplit(Math.max(0, N - 1));
+    }
+}
+// --------------------------------------------------------------------------- //
+//  Playback engine — animates the scrub from current position to the end of
+//  the mission. `playSpeed` is sim-seconds per real-second; the binary search
+//  on `activeTraj.t` lets us deal with non-uniform sample spacing (multi-arc
+//  trajectories distribute samples per arc, not uniformly in time).
+// --------------------------------------------------------------------------- //
+let playing = false;
+let playRafId = null;
+let playStartReal = 0;
+let playStartSimT = 0;
+function setBtnPlayLabel() {
+    btnPlay.textContent = playing ? "❚❚" : "▶";
+    btnPlay.title = playing ? "Pause" : "Play mission animation";
+}
+function startPlayback() {
+    if (playing || !activeTraj || activeTraj.t.length < 2)
+        return;
+    const cur = parseInt(scrub.value, 10);
+    const endIdx = activeTraj.t.length - 1;
+    // If parked at the end (or close to it), rewind to the start so play loops.
+    const startIdx = cur >= endIdx ? 0 : cur;
+    scrub.value = String(startIdx);
+    updateScrubMarker(startIdx);
+    playing = true;
+    playStartReal = performance.now();
+    playStartSimT = activeTraj.t[startIdx] ?? 0;
+    setBtnPlayLabel();
+    playRafId = requestAnimationFrame(tickPlayback);
+}
+function stopPlayback() {
+    playing = false;
+    if (playRafId !== null)
+        cancelAnimationFrame(playRafId);
+    playRafId = null;
+    setBtnPlayLabel();
+}
+function tickPlayback(now) {
+    if (!playing || !activeTraj) {
+        stopPlayback();
+        return;
+    }
+    const speed = parseFloat(playSpeedSel.value || "1000");
+    const elapsedReal = (now - playStartReal) / 1000;
+    const targetSimT = playStartSimT + elapsedReal * speed;
+    const tArr = activeTraj.t;
+    const tEnd = tArr[tArr.length - 1];
+    if (targetSimT >= tEnd) {
+        const last = tArr.length - 1;
+        scrub.value = String(last);
+        updateScrubMarker(last);
+        stopPlayback();
+        return;
+    }
+    // Binary search for the largest sample index with t ≤ targetSimT.
+    let lo = 0, hi = tArr.length - 1;
+    while (lo + 1 < hi) {
+        const mid = (lo + hi) >> 1;
+        if (tArr[mid] <= targetSimT)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    scrub.value = String(lo);
+    updateScrubMarker(lo);
+    playRafId = requestAnimationFrame(tickPlayback);
+}
 function updateScrubMarker(idx) {
     if (!activeTraj || !activeRenderer)
         return;
@@ -231,10 +349,26 @@ function updateScrubMarker(idx) {
     const r = Math.hypot(s[0], s[1], s[2]);
     const v = Math.hypot(s[3], s[4], s[5]);
     scrubInfo.textContent =
-        `t=${t.toFixed(0)} s · |r|=${(r / 1000).toFixed(0)} km · |v|=${(v / 1000).toFixed(2)} km/s`;
+        `t=${formatSimTime(t)} · |r|=${(r / 1000).toFixed(0)} km · |v|=${(v / 1000).toFixed(2)} km/s`;
     updateAltitudeCursor(idx);
+    // Repaint the trajectory with the past/future split at this scrub idx.
+    if (cachedPositions)
+        drawTrajectorySplit(idx);
 }
 scrub.addEventListener("input", () => updateScrubMarker(parseInt(scrub.value, 10)));
+/** Render mission time in the largest readable unit (seconds → hours → days). */
+function formatSimTime(t) {
+    if (!Number.isFinite(t))
+        return "—";
+    const a = Math.abs(t);
+    if (a < 600)
+        return `${t.toFixed(0)} s`;
+    if (a < 7200)
+        return `${(t / 60).toFixed(1)} min`;
+    if (a < 172800)
+        return `${(t / 3600).toFixed(2)} h`;
+    return `${(t / 86400).toFixed(2)} d`;
+}
 function statesToPositions(states) {
     const out = new Float32Array(states.length * 3);
     for (let i = 0; i < states.length; i++) {
@@ -298,7 +432,7 @@ async function showLeo(renderer, j2 = false) {
         j2_enabled: j2,
         body_radius: R_EARTH,
     });
-    renderer.drawTrajectory(statesToPositions(data.states));
+    paintTrajectory(statesToPositions(data.states));
     setActiveTrajectory(data.t, data.states);
     setStatus(j2
         ? `LEO + J2: ${data.states.length} samples over ${(duration / 60).toFixed(0)} min — note nodal regression`
@@ -330,7 +464,7 @@ async function showLaunch(renderer) {
         colors[i * 3 + 1] = g;
         colors[i * 3 + 2] = b;
     }
-    renderer.drawTrajectory(positions, colors);
+    paintTrajectory(positions, colors);
     setActiveTrajectory(data.t, data.states);
     setStatus(`Launch demo: burnout T+${data.burnout_time_s.toFixed(0)}s, ` +
         `Δv_circ=${data.circularization_dv_m_s.toFixed(0)} m/s, ` +
@@ -368,7 +502,7 @@ async function showHohmann(renderer) {
     });
     const positions = statesToPositions(data.states);
     const colors = colorByPhases(data.t, [0, t_dv1, t_dv2], [C_DEPART, C_TRANSFER, C_ARRIVE]);
-    renderer.drawTrajectory(positions, colors);
+    paintTrajectory(positions, colors);
     setActiveTrajectory(data.t, data.states);
     setStatus(`Hohmann LEO(400 km)→GEO  ` +
         `Δv₁=${(ho.dv1_m_s / 1000).toFixed(2)} km/s · ` +
@@ -456,7 +590,7 @@ async function showLambert(renderer) {
     });
     const positions = statesToPositions(data.states);
     const colors = colorByPhases(data.t, [0, t_dv1, t_dv2], [C_DEPART, C_TRANSFER, C_ARRIVE]);
-    renderer.drawTrajectory(positions, colors);
+    paintTrajectory(positions, colors);
     setActiveTrajectory(data.t, data.states);
     const dv1_mag = Math.hypot(dv1[0], dv1[1], dv1[2]);
     const dv2_mag = Math.hypot(dv2[0], dv2[1], dv2[2]);
@@ -597,16 +731,16 @@ async function showCr3bp(renderer) {
         positions[i * 3 + 1] = traj.states[i][1] * L_M;
         positions[i * 3 + 2] = traj.states[i][2] * L_M;
     }
-    renderer.drawTrajectory(positions);
+    paintTrajectory(positions);
     // Build a synthetic states-with-velocity array so the scrubber can drive
     // the RIC marker and altitude chart.
     const statesSi = traj.states.map(s => [
         s[0] * L_M, s[1] * L_M, s[2] * L_M,
-        s[3] * L_M * 2.661699e-6, // EM mean motion ≈ 2.66e-6 rad/s
-        s[4] * L_M * 2.661699e-6,
-        s[5] * L_M * 2.661699e-6,
+        s[3] * L_M * EM_MEAN_MOTION_RAD_S,
+        s[4] * L_M * EM_MEAN_MOTION_RAD_S,
+        s[5] * L_M * EM_MEAN_MOTION_RAD_S,
     ]);
-    setActiveTrajectory(traj.t.map(t => t / 2.661699e-6), statesSi);
+    setActiveTrajectory(traj.t.map(t => t * EM_TIME_UNIT_S), statesSi);
     // Lagrange markers — set after setActiveTrajectory (which clears them).
     const toSI = (p) => [p[0] * L_M, p[1] * L_M, p[2] * L_M];
     renderer.setLagrangePoints([
@@ -690,7 +824,7 @@ async function showLyapunovManifold(renderer) {
         orbitPositions[i * 3 + 1] = propResp.states[i][1] * L_M;
         orbitPositions[i * 3 + 2] = propResp.states[i][2] * L_M;
     }
-    renderer.drawTrajectory(orbitPositions);
+    paintTrajectory(orbitPositions);
     // Build manifold-tube positions in the same Earth-centric synodic frame.
     const tubes = [];
     for (const tube of manResp.trajectories) {
@@ -715,12 +849,12 @@ async function showLyapunovManifold(renderer) {
     const toSI = (p) => [p[0] * L_M + xShift, p[1] * L_M, p[2] * L_M];
     // (defer setLagrangePoints until after setActiveTrajectory clears them)
     // Scrubber needs a synthetic states-with-velocity for the orbit.
-    const n = 2.661699e-6;
+    const n = EM_MEAN_MOTION_RAD_S;
     const statesSi = propResp.states.map(s => [
         s[0] * L_M + xShift, s[1] * L_M, s[2] * L_M,
         s[3] * L_M * n, s[4] * L_M * n, s[5] * L_M * n,
     ]);
-    setActiveTrajectory(propResp.t.map(t => t / n), statesSi);
+    setActiveTrajectory(propResp.t.map(t => t * EM_TIME_UNIT_S), statesSi);
     renderer.setLagrangePoints([
         { position: toSI(L.L1), label: "L1" },
         { position: toSI(L.L2), label: "L2" },
@@ -1441,21 +1575,25 @@ async function applyEditor(renderer) {
             steps: Math.max(2, Math.min(20000, editorState.steps)),
         });
         // Render in non-dim units scaled to the Earth–Moon distance so the scene
-        // matches the J2000 frame visually.
+        // matches the J2000 frame visually. Velocities are also scaled (the scrub
+        // marker uses them for the RIC frame, and the playback engine needs t in
+        // SI seconds — convert non-dim t by EM_TIME_UNIT_S).
         const L = EM_LENGTH_M;
+        const n = EM_MEAN_MOTION_RAD_S;
         const states = res.states.map((s) => [
             s[0] * L, s[1] * L, s[2] * L,
-            s[3] * L, s[4] * L, s[5] * L,
+            s[3] * L * n, s[4] * L * n, s[5] * L * n,
         ]);
-        latestTrajectory = { t: res.t, states };
+        const t_si = res.t.map((t) => t * EM_TIME_UNIT_S);
+        latestTrajectory = { t: t_si, states };
         renderer.setSceneScale(L * 1.5);
         renderer.setCentralBody(BODY.EARTH.radius);
         renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
         moonTrackT = null;
         moonTrackR = null;
         latestMoonR = [L, 0, 0];
-        renderer.drawTrajectory(statesToPositions(states));
-        setActiveTrajectory(res.t, states);
+        paintTrajectory(statesToPositions(states));
+        setActiveTrajectory(t_si, states);
         refreshCameraTarget();
         const cMin = Math.min(...res.jacobi);
         const cMax = Math.max(...res.jacobi);
@@ -1515,6 +1653,11 @@ async function applyEditor(renderer) {
     let data;
     if (useStream) {
         setStatus("streaming propagation…");
+        // Forget the cached past/future split — the intermediate stream renders go
+        // straight to the renderer, and a scrub during streaming should not pull
+        // from the previous trajectory.
+        cachedPositions = null;
+        cachedColors = null;
         streamAbort = new AbortController();
         btnCancel.classList.add("show");
         const allT = [];
@@ -1655,7 +1798,7 @@ async function applyEditor(renderer) {
         : burnWindows.length > 0
             ? applyBurnWindows(colorByPhases(data.t, [0], [C_DEPART]), data.t, burnWindows)
             : undefined;
-    renderer.drawTrajectory(statesToPositions(renderedStates), colors);
+    paintTrajectory(statesToPositions(renderedStates), colors);
     setActiveTrajectory(data.t, renderedStates);
     latestTrajectory = { t: data.t, states: renderedStates };
     redrawFooterChart();
@@ -1738,7 +1881,11 @@ async function runLyapunovPanel(renderer) {
     const orbitProp = await cr3bpPropagate({
         state: orb.state0, t_span: [0, orb.period], mu: editorState.cr_mu, steps: 400,
     });
-    const orbitStates = orbitProp.states.map((p) => [p[0] * L, p[1] * L, p[2] * L, 0, 0, 0]);
+    const nMM = EM_MEAN_MOTION_RAD_S;
+    const orbitStates = orbitProp.states.map((p) => [
+        p[0] * L, p[1] * L, p[2] * L,
+        p[3] * L * nMM, p[4] * L * nMM, p[5] * L * nMM,
+    ]);
     const tubes = man.trajectories.map((tube) => {
         const out = new Float32Array(tube.length * 3);
         for (let i = 0; i < tube.length; i++) {
@@ -1749,13 +1896,14 @@ async function runLyapunovPanel(renderer) {
         }
         return out;
     });
+    const orbitT_si = orbitProp.t.map((t) => t * EM_TIME_UNIT_S);
     renderer.setSceneScale(L * 1.5);
     renderer.setCentralBody(BODY.EARTH.radius);
     renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
-    renderer.drawTrajectory(statesToPositions(orbitStates));
+    paintTrajectory(statesToPositions(orbitStates));
     renderer.setManifoldTubes(tubes);
-    setActiveTrajectory(orbitProp.t, orbitStates);
-    latestTrajectory = { t: orbitProp.t, states: orbitStates };
+    setActiveTrajectory(orbitT_si, orbitStates);
+    latestTrajectory = { t: orbitT_si, states: orbitStates };
     info.textContent =
         `L${Lpt} Lyapunov: T=${orb.period.toFixed(3)}, J=${orb.jacobi.toFixed(4)} · ${tubes.length} manifold tubes (${dir} ${branch})`;
 }
@@ -1858,7 +2006,7 @@ async function runLaunchPanel(renderer) {
     renderer.setSceneScale(Math.max(BODY.EARTH.radius * 1.2, 1e7));
     renderer.setCentralBody(BODY.EARTH.radius);
     renderer.setSecondaryBody(null, 0);
-    renderer.drawTrajectory(positions);
+    paintTrajectory(positions);
     setActiveTrajectory(res.t, res.states);
     latestTrajectory = { t: res.t, states: res.states };
     redrawFooterChart();
@@ -2266,6 +2414,29 @@ async function main() {
     });
     // ---- Footer chart kind selector ----
     chartKindSel.addEventListener("change", () => redrawFooterChart());
+    // ---- Play / pause animation ----
+    btnPlay.addEventListener("click", () => {
+        if (playing)
+            stopPlayback();
+        else
+            startPlayback();
+    });
+    // ---- Manual scrub interrupts playback ----
+    scrub.addEventListener("pointerdown", () => { if (playing)
+        stopPlayback(); });
+    // ---- Spacebar toggles playback (when not typing in an input). ----
+    window.addEventListener("keydown", (e) => {
+        if (e.code !== "Space")
+            return;
+        const tgt = e.target;
+        if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "SELECT" || tgt.tagName === "TEXTAREA"))
+            return;
+        e.preventDefault();
+        if (playing)
+            stopPlayback();
+        else
+            startPlayback();
+    });
     // ---- Lyapunov panel ----
     document.getElementById("btn-lyap-run").addEventListener("click", () => {
         runLyapunovPanel(renderer).catch((e) => (document.getElementById("lyap-info").textContent = `error: ${e.message}`));

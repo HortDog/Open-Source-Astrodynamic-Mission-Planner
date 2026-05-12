@@ -11,6 +11,10 @@ export type Renderer = {
   drawTrajectory(
     positions: Float32Array<ArrayBuffer>,
     colors?: Float32Array<ArrayBuffer>,
+    future?: {
+      positions: Float32Array<ArrayBuffer>;
+      colors?: Float32Array<ArrayBuffer>;
+    },
   ): void;
   /** Place a spacecraft marker at the given inertial position (m). When a
    *  velocity (m/s) is supplied the three arms align with the RIC frame
@@ -337,9 +341,10 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
       depthStencil: ds(false, compare),
     });
 
-  const thickLePipeline     = mkThickPipeline("fs",     "less-equal"); // visible, solid
-  const thickGtPipeline     = mkThickPipeline("fs_dot", "greater");    // occluded, dotted
-  const thickAlwaysPipeline = mkThickPipeline("fs",     "always");     // axes on top
+  const thickLePipeline       = mkThickPipeline("fs",     "less-equal"); // visible, solid
+  const thickGtPipeline       = mkThickPipeline("fs_dot", "greater");    // occluded, dotted
+  const thickAlwaysPipeline   = mkThickPipeline("fs",     "always");     // axes on top
+  const thickLeDashedPipeline = mkThickPipeline("fs_dot", "less-equal"); // visible, dashed — future trajectory
 
   const uniformBuf = device.createBuffer({
     size: UNIFORM_FLOATS * 4,
@@ -356,9 +361,12 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   const thickLeBG       = mkBG(thickLePipeline);
   const thickGtBG       = mkBG(thickGtPipeline);
   const thickAlwaysBG   = mkBG(thickAlwaysPipeline);
+  const thickLeDashedBG = mkBG(thickLeDashedPipeline);
 
   let trajBuf:        GPUBuffer | null = null;
   let trajCount       = 0;
+  let futureBuf:      GPUBuffer | null = null;
+  let futureCount     = 0;
   let bodyBuf:        GPUBuffer | null = null;
   let bodyCount       = 0;
   let solidBodyBuf:   GPUBuffer | null = null;
@@ -526,6 +534,16 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     pass.setBindGroup(0, thickLeBG);
     if (trajBuf && trajCount > 0) { pass.setVertexBuffer(0, trajBuf); pass.draw(trajCount); }
 
+    // 5a. Future trajectory: dashed on both visible and occluded passes.
+    if (futureBuf && futureCount > 0) {
+      pass.setPipeline(thickGtPipeline);
+      pass.setBindGroup(0, thickGtBG);
+      pass.setVertexBuffer(0, futureBuf); pass.draw(futureCount);
+      pass.setPipeline(thickLeDashedPipeline);
+      pass.setBindGroup(0, thickLeDashedBG);
+      pass.setVertexBuffer(0, futureBuf); pass.draw(futureCount);
+    }
+
     // 5b. Secondary body (Moon at its inertial position) — always visible.
     if (secBodyBuf && secBodyCount > 0) {
       pass.setPipeline(thickAlwaysPipeline);
@@ -574,9 +592,21 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   function drawTrajectory(
     positions: Float32Array<ArrayBuffer>,
     colors?: Float32Array<ArrayBuffer>,
+    future?: {
+      positions: Float32Array<ArrayBuffer>;
+      colors?: Float32Array<ArrayBuffer>;
+    },
   ): void {
     const quads = stripToQuads(positions, colors, TRAJ_COLOR);
     [trajBuf, trajCount] = uploadThick(trajBuf, quads);
+    // The future buffer is rendered dashed; ≥ 2 vertices (6 floats) needed
+    // to make a line strip. Below that we treat it as empty.
+    if (future && future.positions.length >= 6) {
+      const fq = stripToQuads(future.positions, future.colors, TRAJ_COLOR);
+      [futureBuf, futureCount] = uploadThick(futureBuf, fq);
+    } else {
+      [futureBuf, futureCount] = uploadThick(futureBuf, new Float32Array(0));
+    }
   }
 
   function setCentralBody(radiusMeters: number): void {
