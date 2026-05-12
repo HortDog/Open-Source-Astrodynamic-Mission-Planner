@@ -34,6 +34,14 @@ export type Renderer = {
   /** Draw apse markers (periapsis/apoapsis crosses) along the active orbit.
    *  Pass an empty array to clear. */
   setApses(apses: ReadonlyArray<{ position: [number, number, number]; isPeriapsis: boolean }>): void;
+  /** Draw Lagrange-point markers as labelled ✕ glyphs at the given positions.
+   *  Each entry includes a 1-2 character label ("L1".."L5") rendered in the
+   *  marker colour.  Pass an empty array to clear. */
+  setLagrangePoints(points: ReadonlyArray<{ position: [number, number, number]; label: string }>): void;
+  /** Draw a bundle of trajectories (manifold tubes) as faint coloured lines.
+   *  Each tube is a flat ``[x,y,z, x,y,z, ...]`` Float32Array.  Pass an empty
+   *  array to clear. */
+  setManifoldTubes(tubes: ReadonlyArray<Float32Array<ArrayBuffer>>, color?: [number, number, number]): void;
   resize(): void;
 };
 
@@ -130,8 +138,10 @@ function nullRenderer(kind: "none" | "webgl2-fallback" = "none"): Renderer {
     setMarker:        () => {},
     setSecondaryBody: () => {},
     setCameraTarget:  () => {},
-    setApses:         () => {},
-    resize:           () => {},
+    setApses:           () => {},
+    setLagrangePoints:  () => {},
+    setManifoldTubes:   () => {},
+    resize:             () => {},
   };
 }
 
@@ -357,6 +367,10 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   let secBodyCount    = 0;
   let apsesBuf:       GPUBuffer | null = null;
   let apsesCount      = 0;
+  let lagrangeBuf:    GPUBuffer | null = null;
+  let lagrangeCount   = 0;
+  let manifoldBuf:    GPUBuffer | null = null;
+  let manifoldCount   = 0;
   let axesBuf:        GPUBuffer | null = null;
   let axesCount       = 0;
   let markerBuf:      GPUBuffer | null = null;
@@ -491,6 +505,17 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     pass.setBindGroup(0, thickLeBG);
     if (bodyBuf && bodyCount > 0) { pass.setVertexBuffer(0, bodyBuf); pass.draw(bodyCount); }
 
+    // 3b. Manifold tubes — drawn between body and trajectory, both occluded
+    // (dotted) and visible passes, so the spacecraft orbit reads on top.
+    if (manifoldBuf && manifoldCount > 0) {
+      pass.setPipeline(thickGtPipeline);
+      pass.setBindGroup(0, thickGtBG);
+      pass.setVertexBuffer(0, manifoldBuf); pass.draw(manifoldCount);
+      pass.setPipeline(thickLePipeline);
+      pass.setBindGroup(0, thickLeBG);
+      pass.setVertexBuffer(0, manifoldBuf); pass.draw(manifoldCount);
+    }
+
     // 4. Trajectory occluded → dotted (on top of planet wireframe).
     pass.setPipeline(thickGtPipeline);
     pass.setBindGroup(0, thickGtBG);
@@ -515,6 +540,14 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
       pass.setBindGroup(0, thickAlwaysBG);
       pass.setVertexBuffer(0, apsesBuf);
       pass.draw(apsesCount);
+    }
+
+    // 5d. Lagrange-point ✕ markers — always on top.
+    if (lagrangeBuf && lagrangeCount > 0) {
+      pass.setPipeline(thickAlwaysPipeline);
+      pass.setBindGroup(0, thickAlwaysBG);
+      pass.setVertexBuffer(0, lagrangeBuf);
+      pass.draw(lagrangeCount);
     }
 
     // 4. Axes: always on top.
@@ -593,6 +626,76 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     [apsesBuf, apsesCount] = uploadThick(apsesBuf, quads);
   }
 
+  const LP_COLOR: [number, number, number] = [1.00, 0.55, 0.05]; // amber — Lagrange points
+
+  function setLagrangePoints(
+    points: ReadonlyArray<{ position: [number, number, number]; label: string }>,
+  ): void {
+    if (points.length === 0) {
+      lagrangeBuf?.destroy();
+      lagrangeBuf = null; lagrangeCount = 0;
+      return;
+    }
+    // ✕ glyph: two diagonal segments at each point (rotated 45° from the apse
+    // cross so the two marker classes don't visually collide).  The `label`
+    // field is ignored by the renderer for now — callers wanting text should
+    // overlay it via DOM.
+    const size = 0.025 * sceneScale;
+    const out = new Float32Array(points.length * 2 * 2 * 6);
+    let o = 0;
+    for (const { position: [px, py, pz] } of points) {
+      const c = LP_COLOR;
+      const segs: [[number, number, number], [number, number, number]][] = [
+        [[px - size, py - size, pz], [px + size, py + size, pz]],
+        [[px - size, py + size, pz], [px + size, py - size, pz]],
+      ];
+      for (const [a, b] of segs) {
+        out[o++] = a[0]; out[o++] = a[1]; out[o++] = a[2];
+        out[o++] = c[0]; out[o++] = c[1]; out[o++] = c[2];
+        out[o++] = b[0]; out[o++] = b[1]; out[o++] = b[2];
+        out[o++] = c[0]; out[o++] = c[1]; out[o++] = c[2];
+      }
+    }
+    const quads = listToQuads(out);
+    [lagrangeBuf, lagrangeCount] = uploadThick(lagrangeBuf, quads);
+  }
+
+  const MANIFOLD_COLOR_DEFAULT: [number, number, number] = [0.65, 0.30, 1.00]; // violet
+
+  function setManifoldTubes(
+    tubes: ReadonlyArray<Float32Array<ArrayBuffer>>,
+    color?: [number, number, number],
+  ): void {
+    if (tubes.length === 0) {
+      manifoldBuf?.destroy();
+      manifoldBuf = null; manifoldCount = 0;
+      return;
+    }
+    // Convert each tube (flat XYZ strip) to thick quads, concatenate so the
+    // whole bundle uploads as a single vertex buffer.
+    const c = color ?? MANIFOLD_COLOR_DEFAULT;
+    const tubeQuads: Float32Array[] = [];
+    let total = 0;
+    for (const tube of tubes) {
+      if (tube.length < 6) continue;  // need at least 2 vertices
+      const q = stripToQuads(tube, undefined, c);
+      tubeQuads.push(q);
+      total += q.length;
+    }
+    if (total === 0) {
+      manifoldBuf?.destroy();
+      manifoldBuf = null; manifoldCount = 0;
+      return;
+    }
+    const merged = new Float32Array(total);
+    let o = 0;
+    for (const q of tubeQuads) {
+      merged.set(q, o);
+      o += q.length;
+    }
+    [manifoldBuf, manifoldCount] = uploadThick(manifoldBuf, merged);
+  }
+
   const SEC_BODY_COLOR: [number, number, number] = [0.55, 0.55, 0.55]; // moon-grey
 
   function setSecondaryBody(
@@ -621,13 +724,30 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     [secBodyBuf, secBodyCount] = uploadThick(secBodyBuf, quads);
   }
 
+  // Axis-length scaling tracker.  Axes are rebuilt when the camera distance
+  // changes by more than ~25% so they stay a consistent visual size across
+  // the entire zoom band (otherwise they're either house-sized at close zoom
+  // or invisible at far zoom).
+  let lastAxisDistance = 0;
+  const AXIS_VISUAL_FRAC = 0.18;  // axis arm ≈ 18% of the camera radius
+
+  function rebuildAxes(): void {
+    const len = AXIS_VISUAL_FRAC * Math.max(distance, 1e-3) * sceneScale;
+    const axesData = listToQuads(buildAxes(len));
+    [axesBuf, axesCount] = uploadThick(axesBuf, axesData);
+    lastAxisDistance = distance;
+  }
+
+  function maybeRebuildAxesForZoom(): void {
+    if (lastAxisDistance <= 0) { rebuildAxes(); return; }
+    const ratio = distance / lastAxisDistance;
+    if (ratio > 1.25 || ratio < 0.8) rebuildAxes();
+  }
+
   function setSceneScale(metersPerUnit: number): void {
     sceneScale = metersPerUnit;
     rebuildScaleMat();
-
-    const axesData = listToQuads(buildAxes(0.25 * sceneScale));
-    [axesBuf, axesCount] = uploadThick(axesBuf, axesData);
-
+    rebuildAxes();
     writeUniforms();
   }
 
@@ -718,6 +838,7 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     // Wider zoom band — surface-skim (1e-3 units ≈ 6 km when sceneScale=R⊕)
     // up to far-field (1e4 units ≈ system-scale).
     distance = Math.max(1e-3, Math.min(1e4, distance * Math.exp(e.deltaY * 0.001)));
+    maybeRebuildAxesForZoom();
     writeUniforms();
   }, { passive: false });
 
@@ -728,6 +849,6 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   return {
     kind: "webgpu",
     setSceneScale, setCentralBody, drawTrajectory, setMarker, setSecondaryBody,
-    setCameraTarget, setApses, resize,
+    setCameraTarget, setApses, setLagrangePoints, setManifoldTubes, resize,
   };
 }

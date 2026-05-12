@@ -65,17 +65,26 @@
         <button id="btn-hohmann">Hohmann LEO→GEO</button>
         <button id="btn-lambert">Lambert intercept</button>
         <button id="btn-cislunar">Cislunar TLI</button>
+        <button id="btn-cr3bp">EM Lagrange (CR3BP)</button>
+        <button id="btn-manifold">L1 Lyapunov + manifold</button>
+        <button id="btn-wsb">WSB diagnostic</button>
         <button id="btn-editor">Maneuver editor</button>
       </header>
       <div id="banner"></div>
       <main>
         <canvas id="scene"></canvas>
         <aside id="editor">
-          <div class="row" style="margin-bottom:4px">
+          <div class="row" style="margin-bottom:4px;gap:4px">
             <label style="flex:1">Central body
               <select id="ic-body" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;padding:2px 4px;font:11px ui-monospace, monospace">
                 <option value="EARTH">Earth</option>
                 <option value="MOON">Moon</option>
+              </select>
+            </label>
+            <label style="flex:1">View frame
+              <select id="ic-frame" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;padding:2px 4px;font:11px ui-monospace, monospace">
+                <option value="J2000">Inertial J2000</option>
+                <option value="EM_SYNODIC">EM synodic</option>
               </select>
             </label>
           </div>

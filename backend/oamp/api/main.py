@@ -12,6 +12,18 @@ from pydantic import BaseModel, Field
 
 from oamp import __version__
 from oamp.bodies import EARTH, MOON, SUN
+from oamp.dynamics.cr3bp import (
+    EM_LENGTH_M,
+    EM_MEAN_MOTION_RAD_S,
+    EM_MU,
+    SE_MU,
+    compute_manifold,
+    find_planar_lyapunov,
+    jacobi_constant,
+    lagrange_points,
+    propagate_cr3bp,
+    wsb_capture_grid,
+)
 from oamp.dynamics.integrators import propagate_symplectic
 from oamp.dynamics.launch import LaunchConfig, default_falcon9_like, simulate_launch
 from oamp.dynamics.newtonian import FiniteBurn, Maneuver, TwoBodyState, propagate_orbit
@@ -107,6 +119,64 @@ class MultiBurnRequest(BaseModel):
     t_final_s: float = Field(gt=0)
     mu: float = EARTH.mu
     initial_dv_guess: list[tuple[float, float, float]] | None = None
+
+
+class Cr3bpPropagateRequest(BaseModel):
+    """Propagate a state in the non-dimensional CR3BP."""
+
+    state: tuple[float, float, float, float, float, float]
+    t_span: tuple[float, float]
+    mu: float = Field(gt=0, lt=0.5, default=EM_MU)
+    steps: Annotated[int, Field(ge=2, le=20_000)] = 400
+
+
+class TransformStatesRequest(BaseModel):
+    """Batch frame transform.  `direction` is either 'to_synodic' or
+    'from_synodic'; `frame` is the target/source rotating frame.
+
+    `t_offsets_s`, if provided, must match the length of `states`: each state
+    is transformed using ``t_tdb + t_offsets_s[i]``.  Without it, all states
+    use the same `t_tdb` — a "frozen-frame" view.  The rotating-frame view
+    that makes the Moon appear stationary needs per-state offsets."""
+
+    direction: Literal["to_synodic", "from_synodic"] = "to_synodic"
+    frame: Literal["EM_SYNODIC"] = "EM_SYNODIC"
+    t_tdb: float
+    t_offsets_s: list[float] | None = None
+    states: list[tuple[float, float, float, float, float, float]]
+
+
+class Cr3bpPeriodicOrbitRequest(BaseModel):
+    """Differential-correction request for a CR3BP periodic orbit."""
+
+    family: Literal["lyapunov"] = "lyapunov"
+    L_point: Literal[1, 2] = 1
+    Ax: float = Field(gt=0, lt=0.2, default=0.01)
+    mu: float = Field(gt=0, lt=0.5, default=EM_MU)
+
+
+class Cr3bpManifoldRequest(BaseModel):
+    """Manifold tube computation for a CR3BP periodic orbit."""
+
+    orbit_state: tuple[float, float, float, float, float, float]
+    period: float = Field(gt=0)
+    mu: float = Field(gt=0, lt=0.5, default=EM_MU)
+    direction: Literal["stable", "unstable"] = "unstable"
+    branch: Literal["+", "-"] = "+"
+    n_samples: Annotated[int, Field(ge=4, le=200)] = 40
+    duration: float = Field(gt=0, le=20, default=8.0)
+    perturbation: float = Field(gt=0, default=1e-6)
+    steps: Annotated[int, Field(ge=20, le=2000)] = 200
+
+
+class WsbGridRequest(BaseModel):
+    """Weak-Stability-Boundary diagnostic grid request."""
+
+    altitudes_m: list[float]
+    angles_rad: list[float]
+    mu: float = Field(gt=0, lt=0.5, default=EM_MU)
+    duration: float = Field(gt=0, le=20, default=6.0)
+    escape_radius: float = Field(gt=0, default=2.0)
 
 
 class SpiceStateRequest(BaseModel):
@@ -381,6 +451,174 @@ async def optimize_multi(req: MultiBurnRequest) -> dict:
         "iterations": res.iterations,
         "final_state_m": res.final_state_m,
         "final_velocity_m_s": res.final_velocity_m_s,
+    }
+
+
+# --------------------------------------------------------------------------- #
+#  CR3BP / rotating frames (Phase 4)
+# --------------------------------------------------------------------------- #
+
+_CR3BP_PRESETS = {"EARTH_MOON": EM_MU, "SUN_EARTH": SE_MU}
+
+
+@app.get("/cr3bp/lagrange")
+async def cr3bp_lagrange(
+    mu: float | None = None,
+    system: Literal["EARTH_MOON", "SUN_EARTH"] | None = None,
+) -> dict:
+    """Return the five Lagrange points (non-dim) for the given mass ratio.
+
+    Either `mu` or `system` must be supplied (`system` selects a built-in
+    preset that resolves to a μ from the canonical Body constants)."""
+    if mu is None and system is None:
+        raise HTTPException(status_code=400, detail="provide mu= or system=")
+    resolved_mu = mu if mu is not None else _CR3BP_PRESETS[system]  # type: ignore[index]
+    try:
+        L = lagrange_points(resolved_mu)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "mu": resolved_mu,
+        "L1": L.L1, "L2": L.L2, "L3": L.L3, "L4": L.L4, "L5": L.L5,
+    }
+
+
+@app.post("/cr3bp/propagate")
+async def cr3bp_propagate(req: Cr3bpPropagateRequest) -> dict:
+    """Propagate a non-dimensional CR3BP state and return the trajectory plus
+    the Jacobi-constant trace (a free integration-error diagnostic)."""
+    import numpy as np
+
+    state0 = np.asarray(req.state, dtype=float)
+    try:
+        t, states = propagate_cr3bp(state0, req.t_span, req.mu, steps=req.steps)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    C = [jacobi_constant(s, req.mu) for s in states]
+    return {
+        "t": t.tolist(),
+        "states": states.tolist(),
+        "jacobi": C,
+        "mu": req.mu,
+    }
+
+
+@app.post("/transform/states")
+async def transform_states(req: TransformStatesRequest) -> dict:
+    """Convert a batch of states between J2000 (Earth-centric) and the
+    Earth–Moon synodic frame at the given TDB epoch.  Requires SPICE."""
+    try:
+        from oamp.frames import em_synodic_to_inertial, inertial_to_em_synodic
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"frames unavailable: {e}") from e
+
+    import numpy as np
+
+    if req.t_offsets_s is not None and len(req.t_offsets_s) != len(req.states):
+        raise HTTPException(
+            status_code=400,
+            detail=f"t_offsets_s length {len(req.t_offsets_s)} != states {len(req.states)}",
+        )
+    out: list[list[float]] = []
+    try:
+        for i, s in enumerate(req.states):
+            r = np.asarray(s[:3], dtype=float)
+            v = np.asarray(s[3:], dtype=float)
+            t_i = req.t_tdb + (req.t_offsets_s[i] if req.t_offsets_s else 0.0)
+            if req.direction == "to_synodic":
+                rr, vv = inertial_to_em_synodic(r, v, t_i)
+            else:
+                rr, vv = em_synodic_to_inertial(r, v, t_i)
+            out.append([*rr.tolist(), *vv.tolist()])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "frame": req.frame,
+        "direction": req.direction,
+        "t_tdb": req.t_tdb,
+        "states": out,
+        "length_scale_m": EM_LENGTH_M,
+        "mean_motion_rad_s": EM_MEAN_MOTION_RAD_S,
+    }
+
+
+@app.post("/cr3bp/periodic-orbit")
+async def cr3bp_periodic_orbit(req: Cr3bpPeriodicOrbitRequest) -> dict:
+    """Run differential correction for a planar Lyapunov orbit around L1 or L2.
+
+    Returns the converged IC, full orbit period, Jacobi constant, and DC
+    convergence info; the caller can feed the IC into `/cr3bp/propagate` to
+    visualise the closed orbit."""
+    if req.family != "lyapunov":
+        raise HTTPException(status_code=400, detail=f"unsupported family: {req.family}")
+    try:
+        orbit = find_planar_lyapunov(L_point=req.L_point, Ax=req.Ax, mu=req.mu)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "state0": list(orbit.state0),
+        "period": orbit.period,
+        "jacobi": orbit.jacobi,
+        "family": orbit.family,
+        "dc_iterations": orbit.dc_iterations,
+        "dc_residual": orbit.dc_residual,
+        "mu": req.mu,
+    }
+
+
+@app.post("/cr3bp/manifold")
+async def cr3bp_manifold(req: Cr3bpManifoldRequest) -> dict:
+    """Compute one branch of an invariant manifold for a periodic orbit.
+
+    Returns ``n_samples`` trajectory tubes, each shape ``(steps, 6)``.  Some
+    may be empty (None entries) if individual integrations failed near the
+    primaries."""
+    import numpy as np
+
+    try:
+        tubes = compute_manifold(
+            np.asarray(req.orbit_state, dtype=float),
+            req.period,
+            req.mu,
+            direction=req.direction,
+            branch=req.branch,
+            n_samples=req.n_samples,
+            duration=req.duration,
+            perturbation=req.perturbation,
+            steps=req.steps,
+        )
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "mu": req.mu,
+        "direction": req.direction,
+        "branch": req.branch,
+        "trajectories": [t.tolist() for t in tubes],
+    }
+
+
+@app.post("/cr3bp/wsb")
+async def cr3bp_wsb(req: WsbGridRequest) -> dict:
+    """Crude Weak-Stability-Boundary capture/escape classification grid.
+
+    Returns a (len(altitudes_m), len(angles_rad)) integer grid where
+    1 = captured-from-past, 0 = escaped, −1 = integrator failure."""
+    import numpy as np
+
+    if len(req.altitudes_m) * len(req.angles_rad) > 5_000:
+        raise HTTPException(status_code=400, detail="grid too large (max 5000 cells)")
+    grid = wsb_capture_grid(
+        np.asarray(req.altitudes_m),
+        np.asarray(req.angles_rad),
+        mu=req.mu,
+        duration=req.duration,
+        escape_radius=req.escape_radius,
+    )
+    return {
+        "mu": req.mu,
+        "altitudes_m": req.altitudes_m,
+        "angles_rad": req.angles_rad,
+        "grid": grid.tolist(),
     }
 
 

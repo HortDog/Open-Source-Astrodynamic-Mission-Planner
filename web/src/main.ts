@@ -1,4 +1,9 @@
 import {
+  cr3bpLagrange,
+  cr3bpManifold,
+  cr3bpPeriodicOrbit,
+  cr3bpPropagate,
+  cr3bpWsb,
   fetchHealth,
   optimizeHohmann,
   optimizeLambert,
@@ -10,6 +15,7 @@ import {
   spiceState,
   tleByNorad,
   tleParse,
+  transformStates,
   type FiniteBurnSpec,
   type Vec3,
 } from "./api";
@@ -25,12 +31,18 @@ const btnLeoJ2 = document.getElementById("btn-leo-j2") as HTMLButtonElement;
 const btnHohmann = document.getElementById("btn-hohmann") as HTMLButtonElement;
 const btnLambert = document.getElementById("btn-lambert") as HTMLButtonElement;
 const btnCislunar = document.getElementById("btn-cislunar") as HTMLButtonElement;
+const btnCr3bp = document.getElementById("btn-cr3bp") as HTMLButtonElement;
+const btnManifold = document.getElementById("btn-manifold") as HTMLButtonElement;
+const btnWsb = document.getElementById("btn-wsb") as HTMLButtonElement;
 const btnEditor = document.getElementById("btn-editor") as HTMLButtonElement;
 const editor = document.getElementById("editor") as HTMLElement;
 const scrub = document.getElementById("scrub") as HTMLInputElement;
 const scrubInfo = document.getElementById("scrub-info") as HTMLSpanElement;
 const camTargetSel = document.getElementById("cam-target") as HTMLSelectElement;
-const allButtons = [btnLeo, btnLaunch, btnLeoJ2, btnHohmann, btnLambert, btnCislunar];
+const allButtons = [
+  btnLeo, btnLaunch, btnLeoJ2, btnHohmann, btnLambert,
+  btnCislunar, btnCr3bp, btnManifold, btnWsb,
+];
 
 const setStatus = (s: string) => { status.textContent = s; };
 const showBanner = (msg: string) => { banner.textContent = msg; banner.classList.add("show"); };
@@ -47,6 +59,11 @@ const BODY: Record<BodyName, { mu: number; radius: number; default_alt_m: number
   EARTH: { mu: 3.986004418e14, radius: 6_378_137,  default_alt_m: 622_000,  label: "Earth" },
   MOON:  { mu: 4.9048695e12,   radius: 1_737_400,  default_alt_m: 100_000,  label: "Moon"  },
 };
+
+// Earth--Moon system constants used by the EM_SYNODIC view-frame transform.
+// Mirror of backend `oamp.dynamics.cr3bp.EM_MU` / `EM_LENGTH_M`.
+const EM_MU_FRONTEND = BODY.MOON.mu / (BODY.EARTH.mu + BODY.MOON.mu);
+const EM_LENGTH_M = 384_400_000;
 
 // Phase colours (phosphor palette + accents for distinct transfer phases).
 const C_DEPART:  [number, number, number] = [0.20, 1.00, 0.30]; // bright phosphor — initial orbit
@@ -176,7 +193,13 @@ function setActiveTrajectory(t: number[], states: number[][]): void {
   scrub.min = "0";
   scrub.max = String(Math.max(0, states.length - 1));
   scrub.value = "0";
-  if (activeRenderer) activeRenderer.setApses(findApses(states));
+  if (activeRenderer) {
+    activeRenderer.setApses(findApses(states));
+    // Lagrange-point markers and manifold tubes are scenario-specific; clear
+    // on every trajectory load.  Demos re-set them right after this call.
+    activeRenderer.setLagrangePoints([]);
+    activeRenderer.setManifoldTubes([]);
+  }
   drawAltitudeChart(t, states);
   updateScrubMarker(0);
 }
@@ -555,6 +578,323 @@ async function showCislunar(renderer: Renderer): Promise<void> {
   );
 }
 
+/** CR3BP Earth–Moon Lagrange demo (Phase 4).
+ *
+ *  Fetches the five Lagrange points for the EM system, renders them as amber
+ *  ✕ markers in the synodic frame, propagates a small trajectory near L1 for
+ *  ~2 dimensionless units (≈9 days in EM units), and reports the worst-case
+ *  Jacobi drift as a free integration-error diagnostic.  Works without SPICE
+ *  — the synodic frame here is the canonical non-dimensional CR3BP frame, not
+ *  the SPICE-derived one, so the demo runs on any installation. */
+async function showCr3bp(renderer: Renderer): Promise<void> {
+  if (renderer.kind !== "webgpu") return;
+  setStatus("solving CR3BP Earth–Moon Lagrange points…");
+
+  // Length scale = EM mean distance (m), matching backend EM_LENGTH_M.
+  const L_M = 384_400_000;
+
+  let L;
+  try {
+    L = await cr3bpLagrange({ system: "EARTH_MOON" });
+  } catch (e) {
+    setStatus(`cr3bp/lagrange error: ${(e as Error).message}`);
+    return;
+  }
+
+  // Scene scale: span the EM system out to L2 + margin.
+  renderer.setSceneScale(1.4 * L_M);
+  // No central body — synodic frame has the barycenter at origin and two
+  // primaries at known offsets; render Earth + Moon as central / secondary.
+  renderer.setCentralBody(6_378_137);                    // Earth at (−μ, 0)
+  // The renderer puts the central body at (0,0,0); to keep the synodic
+  // convention pretty we draw both primaries explicitly.  Earth wireframe at
+  // the origin is "close enough" to (−μ, 0) at our zoom; render Moon at
+  // (1−μ, 0) for the secondary.
+  renderer.setSecondaryBody([(1 - L.mu) * L_M - (-L.mu) * L_M, 0, 0], 1_737_400);
+
+  // Propagate a small kick from near L1.  Choose a state that produces a
+  // visible looping trajectory without escaping; the Jacobi drift over the
+  // integration is reported in the status line.
+  const x0 = L.L1[0] - 0.005;
+  let traj;
+  try {
+    traj = await cr3bpPropagate({
+      state: [x0, 0, 0, 0, 0.01, 0],
+      t_span: [0, 6.0],
+      mu: L.mu,
+      steps: 1200,
+    });
+  } catch (e) {
+    setStatus(`cr3bp/propagate error: ${(e as Error).message}`);
+    return;
+  }
+
+  // Build positions buffer (scaled to SI).
+  const N = traj.states.length;
+  const positions = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    positions[i * 3 + 0] = traj.states[i]![0]! * L_M;
+    positions[i * 3 + 1] = traj.states[i]![1]! * L_M;
+    positions[i * 3 + 2] = traj.states[i]![2]! * L_M;
+  }
+  renderer.drawTrajectory(positions);
+
+  // Build a synthetic states-with-velocity array so the scrubber can drive
+  // the RIC marker and altitude chart.
+  const statesSi: number[][] = traj.states.map(s => [
+    s[0]! * L_M, s[1]! * L_M, s[2]! * L_M,
+    s[3]! * L_M * 2.661699e-6,   // EM mean motion ≈ 2.66e-6 rad/s
+    s[4]! * L_M * 2.661699e-6,
+    s[5]! * L_M * 2.661699e-6,
+  ]);
+  setActiveTrajectory(traj.t.map(t => t / 2.661699e-6), statesSi);
+
+  // Lagrange markers — set after setActiveTrajectory (which clears them).
+  const toSI = (p: Vec3): Vec3 => [p[0] * L_M, p[1] * L_M, p[2] * L_M];
+  renderer.setLagrangePoints([
+    { position: toSI(L.L1), label: "L1" },
+    { position: toSI(L.L2), label: "L2" },
+    { position: toSI(L.L3), label: "L3" },
+    { position: toSI(L.L4), label: "L4" },
+    { position: toSI(L.L5), label: "L5" },
+  ]);
+
+  // Jacobi drift diagnostic.
+  let cMin = Infinity, cMax = -Infinity;
+  for (const c of traj.jacobi) {
+    if (c < cMin) cMin = c;
+    if (c > cMax) cMax = c;
+  }
+  const drift = cMax - cMin;
+  setStatus(
+    `CR3BP EM Lagrange: μ=${L.mu.toExponential(3)}, ` +
+    `L1=${L.L1[0].toFixed(4)}, L2=${L.L2[0].toFixed(4)}, L3=${L.L3[0].toFixed(4)} · ` +
+    `Jacobi drift=${drift.toExponential(2)} over ${N} samples`,
+  );
+}
+
+/** Phase 4.7 — L1 Lyapunov orbit + its unstable manifold (Earth-side branch).
+ *
+ *  Pipeline:
+ *    1. /cr3bp/periodic-orbit   → converged Lyapunov IC + period (planar L1)
+ *    2. /cr3bp/propagate        → trajectory over one period (rendered orbit)
+ *    3. /cr3bp/manifold         → unstable manifold − branch (interior-bound)
+ *  Renders everything in the rotating EM synodic frame: Earth at origin,
+ *  Moon at +d_em, periodic orbit as a closed loop around L1, manifold tubes
+ *  fanning out toward Earth — the classic Conley–McGehee transit corridor. */
+async function showLyapunovManifold(renderer: Renderer): Promise<void> {
+  if (renderer.kind !== "webgpu") return;
+  setStatus("computing L1 planar Lyapunov orbit…");
+
+  const L_M = EM_LENGTH_M;
+
+  // 1. Differential correction.
+  let orbit;
+  try {
+    orbit = await cr3bpPeriodicOrbit({ family: "lyapunov", L_point: 1, Ax: 0.02 });
+  } catch (e) {
+    setStatus(`periodic-orbit error: ${(e as Error).message}`);
+    return;
+  }
+
+  // 2. Propagate the orbit and 3. compute the manifold concurrently.
+  setStatus(`L1 Lyapunov: T=${orbit.period.toFixed(3)}, C=${orbit.jacobi.toFixed(4)} — computing manifold…`);
+  let propResp, manResp;
+  try {
+    [propResp, manResp] = await Promise.all([
+      cr3bpPropagate({
+        state: orbit.state0,
+        t_span: [0, orbit.period],
+        mu: orbit.mu,
+        steps: 600,
+      }),
+      cr3bpManifold({
+        orbit_state: orbit.state0,
+        period: orbit.period,
+        mu: orbit.mu,
+        direction: "unstable",
+        branch: "-",       // − branch points back toward Earth from L1
+        n_samples: 30,
+        duration: 4.0,
+        steps: 200,
+      }),
+    ]);
+  } catch (e) {
+    setStatus(`manifold error: ${(e as Error).message}`);
+    return;
+  }
+
+  // Scene scale spans the L1 → Moon corridor with a margin.
+  renderer.setSceneScale(1.4 * L_M);
+  renderer.setCentralBody(BODY.EARTH.radius);
+
+  // Earth-centric synodic view: barycentric x + μ·d_em shift.
+  const xShift = EM_MU_FRONTEND * L_M;
+  const orbitPositions = new Float32Array(propResp.states.length * 3);
+  for (let i = 0; i < propResp.states.length; i++) {
+    orbitPositions[i * 3 + 0] = propResp.states[i]![0]! * L_M + xShift;
+    orbitPositions[i * 3 + 1] = propResp.states[i]![1]! * L_M;
+    orbitPositions[i * 3 + 2] = propResp.states[i]![2]! * L_M;
+  }
+  renderer.drawTrajectory(orbitPositions);
+
+  // Build manifold-tube positions in the same Earth-centric synodic frame.
+  const tubes: Float32Array<ArrayBuffer>[] = [];
+  for (const tube of manResp.trajectories) {
+    if (tube.length < 2) continue;
+    const arr = new Float32Array(tube.length * 3);
+    for (let i = 0; i < tube.length; i++) {
+      arr[i * 3 + 0] = tube[i]![0]! * L_M + xShift;
+      arr[i * 3 + 1] = tube[i]![1]! * L_M;
+      arr[i * 3 + 2] = tube[i]![2]! * L_M;
+    }
+    tubes.push(arr);
+  }
+  renderer.setManifoldTubes(tubes);
+
+  // Static landmarks in the synodic frame.
+  renderer.setSecondaryBody([L_M, 0, 0], BODY.MOON.radius);
+  latestMoonR = [L_M, 0, 0];
+  moonTrackT = null; moonTrackR = null;
+
+  // Lagrange-point ✕ markers at synodic positions (Earth-centric shift).
+  const L = await cr3bpLagrange({ system: "EARTH_MOON" });
+  const toSI = (p: [number, number, number]): [number, number, number] =>
+    [p[0] * L_M + xShift, p[1] * L_M, p[2] * L_M];
+  // (defer setLagrangePoints until after setActiveTrajectory clears them)
+
+  // Scrubber needs a synthetic states-with-velocity for the orbit.
+  const n = 2.661699e-6;
+  const statesSi: number[][] = propResp.states.map(s => [
+    s[0]! * L_M + xShift, s[1]! * L_M, s[2]! * L_M,
+    s[3]! * L_M * n, s[4]! * L_M * n, s[5]! * L_M * n,
+  ]);
+  setActiveTrajectory(propResp.t.map(t => t / n), statesSi);
+
+  renderer.setLagrangePoints([
+    { position: toSI(L.L1), label: "L1" },
+    { position: toSI(L.L2), label: "L2" },
+    { position: toSI(L.L3), label: "L3" },
+    { position: toSI(L.L4), label: "L4" },
+    { position: toSI(L.L5), label: "L5" },
+  ]);
+  refreshCameraTarget();
+
+  setStatus(
+    `L1 Lyapunov + unstable manifold (− branch): ` +
+    `Ax=0.02 nd · T=${orbit.period.toFixed(3)} · C=${orbit.jacobi.toFixed(4)} · ` +
+    `${tubes.length}/${manResp.trajectories.length} tubes rendered · DC ${orbit.dc_iterations} iter`,
+  );
+}
+
+
+/** Phase 4.8 — Weak Stability Boundary diagnostic.
+ *
+ *  Sweeps a grid of (altitude, angle) initial conditions in low lunar orbit,
+ *  propagates each backward in time, and classifies as captured (stayed near
+ *  the Moon for the integration window) or escaped (came in from infinity).
+ *  Renders captured ICs as green dots and escapes as faint red dots, plotted
+ *  in the EM synodic frame so the Moon is stationary on +x. */
+async function showWsb(renderer: Renderer): Promise<void> {
+  if (renderer.kind !== "webgpu") return;
+  setStatus("computing WSB capture/escape grid…");
+
+  // Coarse grid: 6 altitudes × 12 angles = 72 propagations.  Tight enough
+  // to see the WSB filament without overloading the backend.
+  const altitudes_m = [50e3, 200e3, 500e3, 1_000e3, 2_000e3, 5_000e3];
+  const angles_rad: number[] = [];
+  for (let i = 0; i < 12; i++) angles_rad.push((i / 12) * 2 * Math.PI);
+
+  let res;
+  try {
+    res = await cr3bpWsb({ altitudes_m, angles_rad, duration: 4.0 });
+  } catch (e) {
+    setStatus(`wsb error: ${(e as Error).message}`);
+    return;
+  }
+
+  // Scene set-up: Earth-centric synodic, Moon as the static landmark.
+  const L_M = EM_LENGTH_M;
+  const xShift = EM_MU_FRONTEND * L_M;
+  renderer.setSceneScale(1.4 * L_M);
+  renderer.setCentralBody(BODY.EARTH.radius);
+  renderer.setSecondaryBody([L_M, 0, 0], BODY.MOON.radius);
+  latestMoonR = [L_M, 0, 0];
+  moonTrackT = null; moonTrackR = null;
+
+  // Encode each grid cell as a tiny "trajectory" of two points (a short
+  // segment) so the existing manifold-tubes infrastructure can render the
+  // diagnostic in one upload.
+  const captured: Float32Array<ArrayBuffer>[] = [];
+  const escaped: Float32Array<ArrayBuffer>[] = [];
+  const moonX = (1.0 - EM_MU_FRONTEND) * L_M + xShift;  // Moon in Earth-centric synodic
+  for (let i = 0; i < altitudes_m.length; i++) {
+    const r_m = BODY.MOON.radius + altitudes_m[i]!;
+    for (let j = 0; j < angles_rad.length; j++) {
+      const theta = angles_rad[j]!;
+      const px = moonX + r_m * Math.cos(theta);
+      const py = r_m * Math.sin(theta);
+      // Tiny radial spur so the renderer has a non-degenerate segment.
+      const spur = 0.0035 * L_M;
+      const seg = new Float32Array([
+        px, py, 0,
+        px + spur * Math.cos(theta), py + spur * Math.sin(theta), 0,
+      ]);
+      const cls = res.grid[i]![j]!;
+      if (cls === 1) captured.push(seg);
+      else if (cls === 0) escaped.push(seg);
+    }
+  }
+  // Two-pass render: escaped (dim) first via main trajectory buffer, then
+  // captured (bright violet) via the manifold-tubes pass on top.
+  // For simplicity reuse the manifold-tubes infrastructure with a colour
+  // override per call.
+  renderer.setManifoldTubes(captured, [0.30, 1.00, 0.40]);   // bright green
+  // Plot escapes as a single "trajectory" by concatenating segments — they're
+  // already short, so the polyline interpretation just draws each in sequence.
+  // (We could split them up, but for a coarse diagnostic the visual is fine.)
+  if (escaped.length > 0) {
+    let total = 0;
+    for (const e of escaped) total += e.length;
+    const merged = new Float32Array(total);
+    let o = 0;
+    for (const e of escaped) { merged.set(e, o); o += e.length; }
+    renderer.drawTrajectory(merged);
+  } else {
+    // No escapes: draw the periapsis circle around the Moon as a context cue.
+    const ring = new Float32Array(64 * 3);
+    for (let k = 0; k < 64; k++) {
+      const t = (k / 63) * 2 * Math.PI;
+      const r = BODY.MOON.radius + altitudes_m[0]!;
+      ring[k * 3] = moonX + r * Math.cos(t);
+      ring[k * 3 + 1] = r * Math.sin(t);
+      ring[k * 3 + 2] = 0;
+    }
+    renderer.drawTrajectory(ring);
+  }
+
+  // Synthetic single-state "trajectory" so the scrubber doesn't complain.
+  setActiveTrajectory([0], [[moonX, 0, 0, 0, 0, 0]]);
+
+  // Lagrange-point ✕ markers at synodic positions for context.
+  const L = await cr3bpLagrange({ system: "EARTH_MOON" });
+  const toSI = (p: [number, number, number]): [number, number, number] =>
+    [p[0] * L_M + xShift, p[1] * L_M, p[2] * L_M];
+  renderer.setLagrangePoints([
+    { position: toSI(L.L1), label: "L1" },
+    { position: toSI(L.L2), label: "L2" },
+  ]);
+  refreshCameraTarget();
+
+  const totalCells = altitudes_m.length * angles_rad.length;
+  setStatus(
+    `WSB diagnostic: ${captured.length}/${totalCells} captured · ` +
+    `${escaped.length}/${totalCells} escaped · ` +
+    `${totalCells - captured.length - escaped.length} failed/uncertain`,
+  );
+}
+
+
 // --------------------------------------------------------------------------- //
 //  Maneuver editor — sidebar panel that lets the user set IC, add Δv kicks,
 //  and re-propagate the trajectory.
@@ -572,8 +912,11 @@ type ManeuverRow = {
   dir_r: number; dir_i: number; dir_c: number;
 };
 
+type ViewFrame = "J2000" | "EM_SYNODIC";
+
 const editorState: {
   body: BodyName;
+  frame: ViewFrame;
   rx: number; ry: number; rz: number;
   vx: number; vy: number; vz: number;
   duration_s: number;
@@ -594,6 +937,7 @@ const editorState: {
   third_body_sun: boolean;
 } = {
   body: "EARTH",
+  frame: "J2000",
   rx: R0, ry: 0, rz: 0,
   vx: 0, vy: Math.sqrt(MU_EARTH / R0), vz: 0,
   duration_s: 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH),
@@ -661,6 +1005,7 @@ function readPerturbations(): void {
 
 function fillIc(): void {
   (document.getElementById("ic-body") as HTMLSelectElement).value = editorState.body;
+  (document.getElementById("ic-frame") as HTMLSelectElement).value = editorState.frame;
   (document.getElementById("ic-rx") as HTMLInputElement).value = String(editorState.rx);
   (document.getElementById("ic-ry") as HTMLInputElement).value = String(editorState.ry);
   (document.getElementById("ic-rz") as HTMLInputElement).value = String(editorState.rz);
@@ -675,6 +1020,7 @@ function fillIc(): void {
 function readIc(): void {
   const n = (id: string) => parseFloat((document.getElementById(id) as HTMLInputElement).value);
   editorState.body = (document.getElementById("ic-body") as HTMLSelectElement).value as BodyName;
+  editorState.frame = (document.getElementById("ic-frame") as HTMLSelectElement).value as ViewFrame;
   editorState.rx = n("ic-rx"); editorState.ry = n("ic-ry"); editorState.rz = n("ic-rz");
   editorState.vx = n("ic-vx"); editorState.vy = n("ic-vy"); editorState.vz = n("ic-vz");
   editorState.duration_s = n("ic-duration");
@@ -822,15 +1168,43 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     } : {}),
   });
 
+  // Frame post-processing.  When the user selects EM_SYNODIC, transform the
+  // trajectory states through the backend so the Earth--Moon line is along
+  // +x and both primaries appear stationary.  This requires SPICE kernels;
+  // fall back silently to inertial on error.
+  const wantSynodic = editorState.frame === "EM_SYNODIC" && editorState.body === "EARTH";
+  let renderedStates = data.states;
+  let synodicActive = false;
+  if (wantSynodic) {
+    try {
+      const tr = await transformStates({
+        direction: "to_synodic",
+        t_tdb: 0.0,  // J2000-relative reference; the per-state offsets carry the rest
+        t_offsets_s: data.t,
+        states: data.states,
+      });
+      // Backend returns barycentric synodic; shift origin to Earth-center so
+      // the central-body wireframe at (0,0,0) lines up.
+      const xShift = EM_MU_FRONTEND * EM_LENGTH_M;
+      renderedStates = tr.states.map((s) => [
+        s[0]! + xShift, s[1]!, s[2]!, s[3]!, s[4]!, s[5]!,
+      ]);
+      synodicActive = true;
+    } catch {
+      setStatus("EM_SYNODIC requires SPICE kernels — falling back to J2000");
+    }
+  }
+
   // Auto-scale the scene to fit the trajectory (max radius * 1.2).
   let maxR = 0;
-  for (const s of data.states) {
+  for (const s of renderedStates) {
     const r = Math.hypot(s[0]!, s[1]!, s[2]!);
     if (r > maxR) maxR = r;
   }
-  // Decide on a final scene scale that accounts for the Moon if it'll be
-  // visible (third-body Moon + Earth-centric).
-  const willRenderMoon = editorState.body === "EARTH" && editorState.third_body_moon;
+  // Scene scale: include the Moon range when it'll be visible (third-body
+  // Moon in J2000, or always in synodic where the Moon is a static landmark).
+  const willRenderMoon = synodicActive
+    || (editorState.body === "EARTH" && editorState.third_body_moon);
   const moonRange = 4.0e8;  // approx Earth-Moon distance, used as a min scale
   const sceneScale = willRenderMoon
     ? Math.max(b.radius * 1.1, maxR * 1.2, moonRange * 1.2)
@@ -838,8 +1212,14 @@ async function applyEditor(renderer: Renderer): Promise<void> {
   renderer.setSceneScale(sceneScale);
   renderer.setCentralBody(b.radius);
 
-  // Fetch and render Moon position (best-effort — SPICE kernels may be absent).
-  if (willRenderMoon) {
+  // Moon rendering branch.
+  if (synodicActive) {
+    // Static landmark in the rotating frame.  Moon sits at +d_em from Earth-
+    // center (= +(1−μ)·d_em from barycenter + μ·d_em shift).
+    latestMoonR = [EM_LENGTH_M, 0, 0];
+    moonTrackT = null; moonTrackR = null;
+    renderer.setSecondaryBody(latestMoonR, BODY.MOON.radius);
+  } else if (willRenderMoon) {
     try {
       // Sample Moon ephemeris at ~60 points across the trajectory so the
       // scrubber-driven update is smooth without overloading SPICE.
@@ -884,8 +1264,8 @@ async function applyEditor(renderer: Renderer): Promise<void> {
           burnWindows,
         )
       : undefined;
-  renderer.drawTrajectory(statesToPositions(data.states), colors);
-  setActiveTrajectory(data.t, data.states);
+  renderer.drawTrajectory(statesToPositions(renderedStates), colors);
+  setActiveTrajectory(data.t, renderedStates);
 
   // Active-perturbations badge — what the server actually applied.
   const badge = document.getElementById("pert-active");
@@ -915,6 +1295,7 @@ async function applyEditor(renderer: Renderer): Promise<void> {
 
 function resetEditor(): void {
   editorState.body = "EARTH";
+  editorState.frame = "J2000";
   editorState.steps = 400;
   editorState.maneuvers = [];
   editorState.initial_mass_kg = 1000;
@@ -1131,6 +1512,9 @@ async function main(): Promise<void> {
   wire(btnHohmann, () => showHohmann(renderer));
   wire(btnLambert, () => showLambert(renderer));
   wire(btnCislunar, () => showCislunar(renderer));
+  wire(btnCr3bp,    () => showCr3bp(renderer));
+  wire(btnManifold, () => showLyapunovManifold(renderer));
+  wire(btnWsb,      () => showWsb(renderer));
 
   // Maneuver-editor toggle + initial population.
   resetEditor();

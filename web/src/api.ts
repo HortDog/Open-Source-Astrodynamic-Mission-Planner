@@ -202,6 +202,148 @@ export async function spiceState(
   return r.json();
 }
 
+// --------------------------------------------------------------------------- //
+//  Phase 4 — CR3BP and rotating frames
+// --------------------------------------------------------------------------- //
+
+export type LagrangeResponse = {
+  mu: number;
+  L1: Vec3; L2: Vec3; L3: Vec3; L4: Vec3; L5: Vec3;
+};
+
+export async function cr3bpLagrange(
+  opts: { mu?: number; system?: "EARTH_MOON" | "SUN_EARTH" },
+): Promise<LagrangeResponse> {
+  const qp = new URLSearchParams();
+  if (opts.mu !== undefined) qp.set("mu", String(opts.mu));
+  if (opts.system !== undefined) qp.set("system", opts.system);
+  const r = await fetch(`/api/cr3bp/lagrange?${qp.toString()}`);
+  if (!r.ok) throw new Error(`cr3bp ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type TransformStatesResponse = {
+  frame: string;
+  direction: "to_synodic" | "from_synodic";
+  t_tdb: number;
+  states: number[][];
+  length_scale_m: number;
+  mean_motion_rad_s: number;
+};
+
+export async function transformStates(req: {
+  direction: "to_synodic" | "from_synodic";
+  frame?: "EM_SYNODIC";
+  t_tdb: number;
+  t_offsets_s?: number[];
+  states: number[][];
+}): Promise<TransformStatesResponse> {
+  const r = await fetch("/api/transform/states", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ frame: "EM_SYNODIC", ...req }),
+  });
+  if (!r.ok) throw new Error(`transform ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type Cr3bpPropagateResponse = {
+  t: number[];
+  states: number[][];
+  jacobi: number[];
+  mu: number;
+};
+
+export async function cr3bpPropagate(req: {
+  state: [number, number, number, number, number, number];
+  t_span: [number, number];
+  mu?: number;
+  steps?: number;
+}): Promise<Cr3bpPropagateResponse> {
+  const r = await fetch("/api/cr3bp/propagate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`cr3bp ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type Cr3bpPeriodicOrbitResponse = {
+  state0: [number, number, number, number, number, number];
+  period: number;
+  jacobi: number;
+  family: string;
+  dc_iterations: number;
+  dc_residual: number;
+  mu: number;
+};
+
+export async function cr3bpPeriodicOrbit(req: {
+  family?: "lyapunov";
+  L_point?: 1 | 2;
+  Ax?: number;
+  mu?: number;
+}): Promise<Cr3bpPeriodicOrbitResponse> {
+  const r = await fetch("/api/cr3bp/periodic-orbit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ family: "lyapunov", L_point: 1, ...req }),
+  });
+  if (!r.ok) throw new Error(`cr3bp ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type Cr3bpManifoldResponse = {
+  mu: number;
+  direction: "stable" | "unstable";
+  branch: "+" | "-";
+  trajectories: number[][][];   // [tube][sample][6]
+};
+
+export async function cr3bpManifold(req: {
+  orbit_state: [number, number, number, number, number, number];
+  period: number;
+  mu?: number;
+  direction?: "stable" | "unstable";
+  branch?: "+" | "-";
+  n_samples?: number;
+  duration?: number;
+  perturbation?: number;
+  steps?: number;
+}): Promise<Cr3bpManifoldResponse> {
+  const r = await fetch("/api/cr3bp/manifold", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`cr3bp ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type Cr3bpWsbResponse = {
+  mu: number;
+  altitudes_m: number[];
+  angles_rad: number[];
+  grid: number[][];   // shape (len(altitudes), len(angles))
+};
+
+export async function cr3bpWsb(req: {
+  altitudes_m: number[];
+  angles_rad: number[];
+  mu?: number;
+  duration?: number;
+  escape_radius?: number;
+}): Promise<Cr3bpWsbResponse> {
+  const r = await fetch("/api/cr3bp/wsb", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`cr3bp ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
 export type SpiceEphemeris = {
   et0: number;
   r: Vec3[];
