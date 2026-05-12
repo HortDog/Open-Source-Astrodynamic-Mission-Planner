@@ -26,6 +26,7 @@ import {
   type Vec3,
 } from "./api";
 import { DEG, elementsToState, RAD, stateToElements, type OrbitalElements } from "./kepler";
+import { fetchEarthCoastline } from "./render/earth-coastline";
 import { initRenderer, type Renderer } from "./render/scene";
 
 const status = document.getElementById("status")!;
@@ -466,7 +467,7 @@ function colorByPhases(
 async function showLeo(renderer: Renderer, j2 = false): Promise<void> {
   if (renderer.kind !== "webgpu") return;
   renderer.setSceneScale(R0);
-  renderer.setCentralBody(R_EARTH);
+  renderer.setCentralBody(R_EARTH, "EARTH");
   const v0 = Math.sqrt(MU_EARTH / R0);
   const i = (INCLINATION_DEG * Math.PI) / 180;
   const period = 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH);
@@ -492,7 +493,7 @@ async function showLeo(renderer: Renderer, j2 = false): Promise<void> {
 async function showLaunch(renderer: Renderer): Promise<void> {
   if (renderer.kind !== "webgpu") return;
   renderer.setSceneScale(R_EARTH);
-  renderer.setCentralBody(R_EARTH);
+  renderer.setCentralBody(R_EARTH, "EARTH");
 
   setStatus("running launch sim…");
   const data = await runLaunch();
@@ -526,7 +527,7 @@ async function showHohmann(renderer: Renderer): Promise<void> {
   const r_geo = 42_164e3;              // GEO
 
   renderer.setSceneScale(r_geo);
-  renderer.setCentralBody(R_EARTH);
+  renderer.setCentralBody(R_EARTH, "EARTH");
 
   setStatus("solving Hohmann transfer…");
   const ho = await optimizeHohmann({ r1_m: r_leo, r2_m: r_geo, mu: MU_EARTH });
@@ -581,7 +582,7 @@ async function showLambert(renderer: Renderer): Promise<void> {
   const tof_s = 4 * 60 * 60;          // 4 h
 
   renderer.setSceneScale(r_arr * 1.2);
-  renderer.setCentralBody(R_EARTH);
+  renderer.setCentralBody(R_EARTH, "EARTH");
 
   setStatus("solving Lambert problem…");
 
@@ -777,7 +778,7 @@ async function showCr3bp(renderer: Renderer): Promise<void> {
   renderer.setSceneScale(1.4 * L_M);
   // No central body — synodic frame has the barycenter at origin and two
   // primaries at known offsets; render Earth + Moon as central / secondary.
-  renderer.setCentralBody(6_378_137);                    // Earth at (−μ, 0)
+  renderer.setCentralBody(6_378_137, "EARTH");           // Earth at (−μ, 0)
   // The renderer puts the central body at (0,0,0); to keep the synodic
   // convention pretty we draw both primaries explicitly.  Earth wireframe at
   // the origin is "close enough" to (−μ, 0) at our zoom; render Moon at
@@ -898,7 +899,7 @@ async function showLyapunovManifold(renderer: Renderer): Promise<void> {
 
   // Scene scale spans the L1 → Moon corridor with a margin.
   renderer.setSceneScale(1.4 * L_M);
-  renderer.setCentralBody(BODY.EARTH.radius);
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
 
   // Earth-centric synodic view: barycentric x + μ·d_em shift.
   const xShift = EM_MU_FRONTEND * L_M;
@@ -989,7 +990,7 @@ async function showWsb(renderer: Renderer): Promise<void> {
   const L_M = EM_LENGTH_M;
   const xShift = EM_MU_FRONTEND * L_M;
   renderer.setSceneScale(1.4 * L_M);
-  renderer.setCentralBody(BODY.EARTH.radius);
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
   renderer.setSecondaryBody([L_M, 0, 0], BODY.MOON.radius);
   latestMoonR = [L_M, 0, 0];
   moonTrackT = null; moonTrackR = null;
@@ -1733,7 +1734,7 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     const t_si = res.t.map((t) => t * EM_TIME_UNIT_S);
     latestTrajectory = { t: t_si, states };
     renderer.setSceneScale(L * 1.5);
-    renderer.setCentralBody(BODY.EARTH.radius);
+    renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
     renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
     moonTrackT = null; moonTrackR = null; latestMoonR = [L, 0, 0];
     paintTrajectory(statesToPositions(states));
@@ -1879,7 +1880,7 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     ? Math.max(b.radius * 1.1, maxR * 1.2, moonRange * 1.2)
     : Math.max(b.radius * 1.1, maxR * 1.2);
   renderer.setSceneScale(sceneScale);
-  renderer.setCentralBody(b.radius);
+  renderer.setCentralBody(b.radius, editorState.body);
 
   // Moon rendering branch.
   if (synodicActive) {
@@ -2035,7 +2036,7 @@ async function runLyapunovPanel(renderer: Renderer): Promise<void> {
   });
   const orbitT_si = orbitProp.t.map((t) => t * EM_TIME_UNIT_S);
   renderer.setSceneScale(L * 1.5);
-  renderer.setCentralBody(BODY.EARTH.radius);
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
   renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
   paintTrajectory(statesToPositions(orbitStates));
   renderer.setManifoldTubes(tubes);
@@ -2090,7 +2091,7 @@ async function runWsbPanel(renderer: Renderer): Promise<void> {
     }
   }
   renderer.setSceneScale(L * 1.5);
-  renderer.setCentralBody(BODY.EARTH.radius);
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
   renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
   if (captured.length > 0) {
     renderer.drawTrajectory(new Float32Array(captured));
@@ -2144,7 +2145,7 @@ async function runLaunchPanel(renderer: Renderer): Promise<void> {
   const res = await runLaunchConfig(cfg);
   const positions = statesToPositions(res.states);
   renderer.setSceneScale(Math.max(BODY.EARTH.radius * 1.2, 1e7));
-  renderer.setCentralBody(BODY.EARTH.radius);
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
   renderer.setSecondaryBody(null, 0);
   paintTrajectory(positions);
   setActiveTrajectory(res.t, res.states);
@@ -2382,6 +2383,13 @@ async function main(): Promise<void> {
     setStatus(`backend unreachable: ${(e as Error).message}`);
     return;
   }
+
+  // Natural Earth coastline — fetched once at boot, non-blocking. The
+  // graticule already renders synchronously inside the renderer, so demos
+  // come up immediately; the coastline pops in when this resolves.
+  fetchEarthCoastline()
+    .then((polys) => renderer.setEarthCoastline(polys))
+    .catch((e) => console.warn("coastline fetch failed:", (e as Error).message));
 
   // SPICE kernel status badge — polled once at boot.
   try {

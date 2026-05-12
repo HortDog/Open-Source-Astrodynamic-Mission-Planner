@@ -2,12 +2,23 @@
 // screen-space quads so line width is controllable. Occluded lines
 // (behind the central body) appear as dotted. +Z is the celestial pole.
 
+import { GRATICULE } from "./earth-coastline";
 import { lookAt, mat4, multiply, perspective } from "./mat4";
+
+type LatLon = readonly [number, number];
 
 export type Renderer = {
   readonly kind: "webgpu" | "webgl2-fallback" | "none";
   setSceneScale(metersPerUnit: number): void;
-  setCentralBody(radiusMeters: number): void;
+  /** Set the central-body radius. Passing `body: "EARTH"` overlays the
+   *  equator/meridian graticule plus any coastline data that's been loaded
+   *  via `setEarthCoastline`. Any other value clears that overlay. */
+  setCentralBody(radiusMeters: number, body?: "EARTH" | "MOON"): void;
+  /** Provide real-world coastline polylines (lat/lon pairs in degrees) for
+   *  the Earth overlay. The buffer is rebuilt immediately if the central body
+   *  is already Earth; otherwise the data is cached for the next Earth view.
+   *  Pass `null` to clear back to graticule-only. */
+  setEarthCoastline(polylines: ReadonlyArray<ReadonlyArray<readonly [number, number]>> | null): void;
   drawTrajectory(
     positions: Float32Array<ArrayBuffer>,
     colors?: Float32Array<ArrayBuffer>,
@@ -136,9 +147,10 @@ fn fs_dot(
 function nullRenderer(kind: "none" | "webgl2-fallback" = "none"): Renderer {
   return {
     kind,
-    setSceneScale:    () => {},
-    setCentralBody:   () => {},
-    drawTrajectory:   () => {},
+    setSceneScale:     () => {},
+    setCentralBody:    () => {},
+    setEarthCoastline: () => {},
+    drawTrajectory:    () => {},
     setMarker:        () => {},
     setSecondaryBody: () => {},
     setCameraTarget:  () => {},
@@ -367,6 +379,8 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   let trajCount       = 0;
   let futureBuf:      GPUBuffer | null = null;
   let futureCount     = 0;
+  let coastBuf:       GPUBuffer | null = null;
+  let coastCount      = 0;
   let bodyBuf:        GPUBuffer | null = null;
   let bodyCount       = 0;
   let solidBodyBuf:   GPUBuffer | null = null;
@@ -513,6 +527,16 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     pass.setBindGroup(0, thickLeBG);
     if (bodyBuf && bodyCount > 0) { pass.setVertexBuffer(0, bodyBuf); pass.draw(bodyCount); }
 
+    // 3a. Coastline overlay: occluded → dotted, then visible → solid.
+    if (coastBuf && coastCount > 0) {
+      pass.setPipeline(thickGtPipeline);
+      pass.setBindGroup(0, thickGtBG);
+      pass.setVertexBuffer(0, coastBuf); pass.draw(coastCount);
+      pass.setPipeline(thickLePipeline);
+      pass.setBindGroup(0, thickLeBG);
+      pass.setVertexBuffer(0, coastBuf); pass.draw(coastCount);
+    }
+
     // 3b. Manifold tubes — drawn between body and trajectory, both occluded
     // (dotted) and visible passes, so the spacecraft orbit reads on top.
     if (manifoldBuf && manifoldCount > 0) {
@@ -609,12 +633,69 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     }
   }
 
-  function setCentralBody(radiusMeters: number): void {
+  // Surface overlay: GRATICULE is always available (procedural); coastline
+  // polylines arrive asynchronously via `setEarthCoastline` once the Natural
+  // Earth fetch resolves. Both render at 1.002 r so they don't z-fight with
+  // the lat/lon wireframe at radius 1.000.
+  const COAST_COLOR: [number, number, number]     = [0.10, 0.85, 0.45];
+  const GRATICULE_COLOR: [number, number, number] = [0.40, 1.00, 0.60];
+  let coastPolys: ReadonlyArray<ReadonlyArray<LatLon>> = [];
+  let lastBodyRadius = 0;
+  let lastBodyName: "EARTH" | "MOON" | undefined = undefined;
+
+  function buildCoastlineList(radius: number): Float32Array<ArrayBuffer> {
+    const r = radius * 1.002;
+    const segs: number[] = [];
+    const emit = (polys: ReadonlyArray<ReadonlyArray<LatLon>>, c: [number, number, number]): void => {
+      for (const poly of polys) {
+        for (let i = 0; i < poly.length - 1; i++) {
+          const [latA, lonA] = poly[i]!;
+          const [latB, lonB] = poly[i + 1]!;
+          const phiA = (latA * Math.PI) / 180, lamA = (lonA * Math.PI) / 180;
+          const phiB = (latB * Math.PI) / 180, lamB = (lonB * Math.PI) / 180;
+          const ax = r * Math.cos(phiA) * Math.cos(lamA);
+          const ay = r * Math.cos(phiA) * Math.sin(lamA);
+          const az = r * Math.sin(phiA);
+          const bx = r * Math.cos(phiB) * Math.cos(lamB);
+          const by = r * Math.cos(phiB) * Math.sin(lamB);
+          const bz = r * Math.sin(phiB);
+          segs.push(ax, ay, az, c[0], c[1], c[2],
+                    bx, by, bz, c[0], c[1], c[2]);
+        }
+      }
+    };
+    emit(coastPolys, COAST_COLOR);
+    emit(GRATICULE, GRATICULE_COLOR);
+    return new Float32Array(segs);
+  }
+
+  function rebuildEarthOverlay(): void {
+    if (lastBodyName === "EARTH" && lastBodyRadius > 0) {
+      const coastQuads = listToQuads(buildCoastlineList(lastBodyRadius));
+      [coastBuf, coastCount] = uploadThick(coastBuf, coastQuads);
+    } else {
+      [coastBuf, coastCount] = uploadThick(coastBuf, new Float32Array(0));
+    }
+  }
+
+  function setCentralBody(radiusMeters: number, body?: "EARTH" | "MOON"): void {
+    lastBodyRadius = radiusMeters;
+    lastBodyName = body;
+
     const wireQuads = listToQuads(buildSphere(radiusMeters));
     [bodyBuf, bodyCount] = uploadThick(bodyBuf, wireQuads);
 
     const solidData = buildSolidSphere(radiusMeters * 0.995); // slightly smaller to avoid z-fighting with wireframe
     [solidBodyBuf, solidBodyCount] = uploadRaw(solidBodyBuf, solidData, 3);
+
+    rebuildEarthOverlay();
+  }
+
+  function setEarthCoastline(
+    polys: ReadonlyArray<ReadonlyArray<LatLon>> | null,
+  ): void {
+    coastPolys = polys ?? [];
+    rebuildEarthOverlay();
   }
 
   function setCameraTarget(target: [number, number, number] | null): void {
@@ -892,7 +973,8 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
 
   return {
     kind: "webgpu",
-    setSceneScale, setCentralBody, drawTrajectory, setMarker, setSecondaryBody,
-    setCameraTarget, setApses, setLagrangePoints, setManifoldTubes, resize,
+    setSceneScale, setCentralBody, setEarthCoastline, drawTrajectory, setMarker,
+    setSecondaryBody, setCameraTarget, setApses, setLagrangePoints,
+    setManifoldTubes, resize,
   };
 }
