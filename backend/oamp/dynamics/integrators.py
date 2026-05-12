@@ -24,7 +24,7 @@ Both work with the same RHS-style acceleration function:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import numpy as np
 
@@ -183,3 +183,79 @@ def propagate_symplectic(
             v = v + dv_inertial
 
     return np.asarray(times_out, dtype=float), np.vstack(states_out)
+
+
+def propagate_symplectic_chunked(
+    state: TwoBodyState,
+    duration_s: float,
+    steps: int = 200,
+    body: Body = EARTH,
+    perturbation: Perturbation | None = None,
+    j2_enabled: bool = False,
+    maneuvers: list[Maneuver] | None = None,
+    t0_tdb: float = 0.0,
+    method: str = "yoshida4",
+    substeps_per_sample: int = 4,
+    chunk_size: int = 200,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Like propagate_symplectic but yields (t_chunk, states_chunk) every chunk_size steps."""
+    if method not in _STEPPERS:
+        raise ValueError(f"unknown integrator {method!r}; choose from {list(_STEPPERS)}")
+    stepper = _STEPPERS[method]
+
+    if perturbation is None and j2_enabled and body.j2 != 0.0:
+        perturbation = zonal_harmonics(body, n_max=2)
+    accel = _make_accel(body.mu, perturbation)
+
+    mans = sorted(maneuvers or [], key=lambda m: m.t_offset_s)
+    if any(m.t_offset_s > duration_s for m in mans):
+        raise ValueError("manoeuvre occurs after the requested propagation end")
+
+    breakpoints = [0.0, *(m.t_offset_s for m in mans), duration_s]
+    total = duration_s if duration_s > 0 else 1.0
+    arc_samples = [
+        max(2, int(round(steps * (breakpoints[i + 1] - breakpoints[i]) / total)))
+        for i in range(len(breakpoints) - 1)
+    ]
+
+    r = np.asarray(state.r, dtype=float)
+    v = np.asarray(state.v, dtype=float)
+    t_buf: list[float] = []
+    s_buf: list[np.ndarray] = []
+
+    for arc_i, n_samples in enumerate(arc_samples):
+        t_a, t_b = breakpoints[arc_i], breakpoints[arc_i + 1]
+        if t_b <= t_a:
+            continue
+        sample_times = np.linspace(t_a, t_b, n_samples)
+        sample_dt = (t_b - t_a) / max(n_samples - 1, 1)
+        h = sample_dt / max(substeps_per_sample, 1)
+        t = t_a
+
+        if arc_i == 0:
+            t_buf.append(t)
+            s_buf.append(np.concatenate((r, v)))
+
+        for i in range(1, n_samples):
+            target_t = float(sample_times[i])
+            while t + h < target_t - 1e-12:
+                r, v = stepper(t0_tdb + t, r, v, h, accel)
+                t += h
+            remaining = target_t - t
+            if remaining > 0:
+                r, v = stepper(t0_tdb + t, r, v, remaining, accel)
+                t = target_t
+            t_buf.append(t)
+            s_buf.append(np.concatenate((r, v)))
+
+            if len(t_buf) >= chunk_size:
+                yield np.asarray(t_buf, dtype=float), np.vstack(s_buf)
+                t_buf = []
+                s_buf = []
+
+        if arc_i < len(mans):
+            dv_inertial = ric_to_inertial(r, v, np.asarray(mans[arc_i].dv_ric))
+            v = v + dv_inertial
+
+    if t_buf:
+        yield np.asarray(t_buf, dtype=float), np.vstack(s_buf)

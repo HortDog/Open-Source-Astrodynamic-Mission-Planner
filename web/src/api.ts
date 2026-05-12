@@ -61,6 +61,35 @@ export async function propagate(req: PropagateRequest): Promise<PropagateRespons
   return r.json();
 }
 
+export type StreamChunk =
+  | { done: false; t: number[]; states: number[][]; received_steps: number; total_steps: number }
+  | { done: true; perturbations: string[] }
+  | { error: string };
+
+/** Stream a propagation as NDJSON chunks. Yields partial trajectory slices as
+ *  they complete so the caller can render the orbit incrementally. */
+export async function* propagateStream(req: PropagateRequest): AsyncGenerator<StreamChunk> {
+  const r = await fetch("/api/propagate/stream", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`propagate/stream ${r.status}: ${await r.text()}`);
+  const reader = r.body!.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += value;
+    const lines = buf.split("\n");
+    buf = lines.pop()!;
+    for (const line of lines) {
+      if (line.trim()) yield JSON.parse(line) as StreamChunk;
+    }
+  }
+  if (buf.trim()) yield JSON.parse(buf) as StreamChunk;
+}
+
 export type HohmannResponse = {
   dv1_m_s: number;
   dv2_m_s: number;

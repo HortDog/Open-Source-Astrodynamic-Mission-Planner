@@ -1,4 +1,4 @@
-import { cr3bpLagrange, cr3bpManifold, cr3bpPeriodicOrbit, cr3bpPropagate, cr3bpWsb, fetchHealth, optimizeHohmann, optimizeLambert, optimizeMultiBurn, propagate, runLaunch, SimSocket, spiceEphemeris, spiceState, tleByNorad, tleParse, transformStates, } from "./api";
+import { cr3bpLagrange, cr3bpManifold, cr3bpPeriodicOrbit, cr3bpPropagate, cr3bpWsb, fetchHealth, optimizeHohmann, optimizeLambert, optimizeMultiBurn, propagate, propagateStream, runLaunch, SimSocket, spiceEphemeris, spiceState, tleByNorad, tleParse, transformStates, } from "./api";
 import { initRenderer } from "./render/scene";
 const status = document.getElementById("status");
 const version = document.getElementById("version");
@@ -994,9 +994,8 @@ function renderManeuverList() {
 async function applyEditor(renderer) {
     readIc();
     readPerturbations();
-    setStatus("propagating editor scenario…");
     const b = BODY[editorState.body];
-    const data = await propagate({
+    const propReq = {
         state: {
             r: [editorState.rx, editorState.ry, editorState.rz],
             v: [editorState.vx, editorState.vy, editorState.vz],
@@ -1039,7 +1038,35 @@ async function applyEditor(renderer) {
             })),
             initial_mass_kg: editorState.initial_mass_kg,
         } : {}),
-    });
+    };
+    const useStream = document.getElementById("ic-stream").checked
+        || editorState.steps > 2000;
+    let data;
+    if (useStream) {
+        setStatus("streaming propagation…");
+        const allT = [];
+        const allStates = [];
+        let perturbations = [];
+        for await (const chunk of propagateStream(propReq)) {
+            if ("error" in chunk)
+                throw new Error(chunk.error);
+            if (chunk.done) {
+                perturbations = chunk.perturbations;
+                break;
+            }
+            allT.push(...chunk.t);
+            allStates.push(...chunk.states);
+            // Render partial orbit without colour (full colour pass happens below after all data arrives).
+            renderer.drawTrajectory(statesToPositions(allStates));
+            setStatus(`streaming… ${chunk.received_steps} / ${chunk.total_steps} steps`);
+            await new Promise((res) => requestAnimationFrame(() => res()));
+        }
+        data = { t: allT, states: allStates, perturbations };
+    }
+    else {
+        setStatus("propagating editor scenario…");
+        data = await propagate(propReq);
+    }
     // Frame post-processing.  When the user selects EM_SYNODIC, transform the
     // trajectory states through the backend so the Earth--Moon line is along
     // +x and both primaries appear stationary.  This requires SPICE kernels;

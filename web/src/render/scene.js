@@ -529,13 +529,14 @@ export async function initRenderer(canvas) {
     const APSE_PERI = [1.00, 0.30, 1.00]; // magenta — periapsis
     const APSE_APO = [1.00, 1.00, 0.50]; // pale yellow — apoapsis
     function setApses(apses) {
+        cachedApses = apses;
         if (apses.length === 0) {
             apsesBuf?.destroy();
             apsesBuf = null;
             apsesCount = 0;
             return;
         }
-        const size = 0.015 * sceneScale;
+        const size = APSE_VISUAL_FRAC * Math.max(distance, 1e-3) * sceneScale;
         // Each apse = 3 orthogonal segments × 2 verts × 6 floats.
         const out = new Float32Array(apses.length * 3 * 2 * 6);
         let o = 0;
@@ -566,6 +567,7 @@ export async function initRenderer(canvas) {
     }
     const LP_COLOR = [1.00, 0.55, 0.05]; // amber — Lagrange points
     function setLagrangePoints(points) {
+        cachedLagrange = points;
         if (points.length === 0) {
             lagrangeBuf?.destroy();
             lagrangeBuf = null;
@@ -576,7 +578,7 @@ export async function initRenderer(canvas) {
         // cross so the two marker classes don't visually collide).  The `label`
         // field is ignored by the renderer for now — callers wanting text should
         // overlay it via DOM.
-        const size = 0.025 * sceneScale;
+        const size = LP_VISUAL_FRAC * Math.max(distance, 1e-3) * sceneScale;
         const out = new Float32Array(points.length * 2 * 2 * 6);
         let o = 0;
         for (const { position: [px, py, pz] } of points) {
@@ -660,31 +662,35 @@ export async function initRenderer(canvas) {
         const quads = listToQuads(out);
         [secBodyBuf, secBodyCount] = uploadThick(secBodyBuf, quads);
     }
-    // Axis-length scaling tracker.  Axes are rebuilt when the camera distance
-    // changes by more than ~25% so they stay a consistent visual size across
-    // the entire zoom band (otherwise they're either house-sized at close zoom
-    // or invisible at far zoom).
-    let lastAxisDistance = 0;
+    // Axis-length scaling tracker.  All markers (axes, spacecraft, apses,
+    // Lagrange points) are rebuilt on every wheel event so they maintain a
+    // consistent angular size regardless of zoom level — buffers are tiny
+    // (<1 KB each) so the upload cost is negligible.
     const AXIS_VISUAL_FRAC = 0.18; // axis arm ≈ 18% of the camera radius
+    const MKR_VISUAL_FRAC = 0.03; // spacecraft marker arms
+    const APSE_VISUAL_FRAC = 0.015; // apse cross arms
+    const LP_VISUAL_FRAC = 0.025; // Lagrange ✕ arms
+    // Cached inputs so zoom rebuilds can replay the last set* call.
+    let cachedMarkerPos = null;
+    let cachedMarkerVel = undefined;
+    let cachedMarkerColor = undefined;
+    let cachedApses = [];
+    let cachedLagrange = [];
     function rebuildAxes() {
         const len = AXIS_VISUAL_FRAC * Math.max(distance, 1e-3) * sceneScale;
         const axesData = listToQuads(buildAxes(len));
         [axesBuf, axesCount] = uploadThick(axesBuf, axesData);
-        lastAxisDistance = distance;
     }
-    function maybeRebuildAxesForZoom() {
-        if (lastAxisDistance <= 0) {
-            rebuildAxes();
-            return;
-        }
-        const ratio = distance / lastAxisDistance;
-        if (ratio > 1.25 || ratio < 0.8)
-            rebuildAxes();
+    function rebuildAllForZoom() {
+        rebuildAxes();
+        setMarker(cachedMarkerPos, cachedMarkerVel, cachedMarkerColor);
+        setApses(cachedApses);
+        setLagrangePoints(cachedLagrange);
     }
     function setSceneScale(metersPerUnit) {
         sceneScale = metersPerUnit;
         rebuildScaleMat();
-        rebuildAxes();
+        rebuildAllForZoom();
         writeUniforms();
     }
     // RIC arm colours (match axis palette so they read clearly).
@@ -693,13 +699,16 @@ export async function initRenderer(canvas) {
     const MKR_C = [0.20, 0.80, 1.00]; // cross-track — cyan
     const MKR_DEF = [1.0, 0.95, 0.25]; // fallback — yellow
     function setMarker(position, velocity, color) {
+        cachedMarkerPos = position;
+        cachedMarkerVel = velocity;
+        cachedMarkerColor = color;
         if (position === null) {
             markerBuf?.destroy();
             markerBuf = null;
             markerCount = 0;
             return;
         }
-        const size = 0.03 * sceneScale;
+        const size = MKR_VISUAL_FRAC * Math.max(distance, 1e-3) * sceneScale;
         const [px, py, pz] = position;
         // Default: inertial ±X/Y/Z cross with a single colour.
         let r_hat = [1, 0, 0];
@@ -772,7 +781,7 @@ export async function initRenderer(canvas) {
         // Wider zoom band — surface-skim (1e-3 units ≈ 6 km when sceneScale=R⊕)
         // up to far-field (1e4 units ≈ system-scale).
         distance = Math.max(1e-3, Math.min(1e4, distance * Math.exp(e.deltaY * 0.001)));
-        maybeRebuildAxesForZoom();
+        rebuildAllForZoom();
         writeUniforms();
     }, { passive: false });
     resize();

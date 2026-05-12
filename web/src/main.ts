@@ -9,6 +9,7 @@ import {
   optimizeLambert,
   optimizeMultiBurn,
   propagate,
+  propagateStream,
   runLaunch,
   SimSocket,
   spiceEphemeris,
@@ -17,6 +18,7 @@ import {
   tleParse,
   transformStates,
   type FiniteBurnSpec,
+  type PropagateResponse,
   type Vec3,
 } from "./api";
 import { initRenderer, type Renderer } from "./render/scene";
@@ -1121,12 +1123,11 @@ function renderManeuverList(): void {
 async function applyEditor(renderer: Renderer): Promise<void> {
   readIc();
   readPerturbations();
-  setStatus("propagating editor scenario…");
   const b = BODY[editorState.body];
-  const data = await propagate({
+  const propReq = {
     state: {
-      r: [editorState.rx, editorState.ry, editorState.rz],
-      v: [editorState.vx, editorState.vy, editorState.vz],
+      r: [editorState.rx, editorState.ry, editorState.rz] as [number, number, number],
+      v: [editorState.vx, editorState.vy, editorState.vz] as [number, number, number],
     },
     duration_s: editorState.duration_s,
     steps: editorState.steps,
@@ -1166,7 +1167,33 @@ async function applyEditor(renderer: Renderer): Promise<void> {
         })),
       initial_mass_kg: editorState.initial_mass_kg,
     } : {}),
-  });
+  };
+
+  const useStream = (document.getElementById("ic-stream") as HTMLInputElement).checked
+    || editorState.steps > 2000;
+
+  let data: PropagateResponse;
+
+  if (useStream) {
+    setStatus("streaming propagation…");
+    const allT: number[] = [];
+    const allStates: number[][] = [];
+    let perturbations: string[] = [];
+    for await (const chunk of propagateStream(propReq)) {
+      if ("error" in chunk) throw new Error(chunk.error);
+      if (chunk.done) { perturbations = chunk.perturbations; break; }
+      allT.push(...chunk.t);
+      allStates.push(...chunk.states);
+      // Render partial orbit without colour (full colour pass happens below after all data arrives).
+      renderer.drawTrajectory(statesToPositions(allStates));
+      setStatus(`streaming… ${chunk.received_steps} / ${chunk.total_steps} steps`);
+      await new Promise<void>((res) => requestAnimationFrame(() => res()));
+    }
+    data = { t: allT, states: allStates, perturbations };
+  } else {
+    setStatus("propagating editor scenario…");
+    data = await propagate(propReq);
+  }
 
   // Frame post-processing.  When the user selects EM_SYNODIC, transform the
   // trajectory states through the backend so the Earth--Moon line is along

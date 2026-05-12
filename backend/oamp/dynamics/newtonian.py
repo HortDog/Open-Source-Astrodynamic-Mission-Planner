@@ -12,6 +12,8 @@ plus a relative time offset built in by the caller (see `propagate_orbit`).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import numpy as np
 from pydantic import BaseModel, Field
 from scipy.integrate import solve_ivp
@@ -147,6 +149,130 @@ def _make_rhs(
     return _rhs
 
 
+def _build_propagation_plan(
+    state: TwoBodyState,
+    duration_s: float,
+    steps: int,
+    body: Body,
+    j2_enabled: bool,
+    perturbation: Perturbation | None,
+    maneuvers: list[Maneuver] | None,
+    finite_burns: list[FiniteBurn] | None,
+    initial_mass_kg: float | None,
+) -> tuple[
+    np.ndarray,
+    Perturbation | None,
+    list[float],
+    list[int],
+    dict[float, Maneuver],
+    list[tuple],
+]:
+    """Validate inputs and return the arc plan used by both propagate_orbit variants."""
+    if perturbation is None and j2_enabled and body.j2 != 0.0:
+        perturbation = zonal_harmonics(body, n_max=2)
+
+    mans = sorted(maneuvers or [], key=lambda m: m.t_offset_s)
+    fburns = sorted(finite_burns or [], key=lambda b: b.t_start_s)
+
+    if any(m.t_offset_s > duration_s for m in mans):
+        raise ValueError("manoeuvre occurs after the requested propagation end")
+    if fburns and initial_mass_kg is None:
+        raise ValueError("initial_mass_kg is required when finite_burns are specified")
+    for j in range(len(fburns) - 1):
+        if fburns[j].t_start_s + fburns[j].duration_s > fburns[j + 1].t_start_s + 1e-9:
+            raise ValueError("finite burns must not overlap")
+
+    current_mass: float = initial_mass_kg or 1.0
+    burn_info: list[tuple] = []
+    for b in fburns:
+        mdot = b.thrust_n / (_G0 * b.isp_s)
+        burn_info.append((b, current_mass, mdot))
+        current_mass = max(current_mass - mdot * b.duration_s, 1.0)
+
+    bp_set: set[float] = {0.0, duration_s}
+    for m in mans:
+        bp_set.add(m.t_offset_s)
+    for b in fburns:
+        bp_set.add(b.t_start_s)
+        bp_set.add(min(b.t_start_s + b.duration_s, duration_s))
+    breakpoints = sorted(bp_set)
+
+    total = duration_s if duration_s > 0 else 1.0
+    arc_samples = [
+        max(2, int(round(steps * (breakpoints[i + 1] - breakpoints[i]) / total)))
+        for i in range(len(breakpoints) - 1)
+    ]
+    man_at: dict[float, Maneuver] = {m.t_offset_s: m for m in mans}
+    y0 = np.array([*state.r, *state.v], dtype=float)
+    return y0, perturbation, breakpoints, arc_samples, man_at, burn_info
+
+
+def _iter_arcs(
+    y0: np.ndarray,
+    breakpoints: list[float],
+    arc_samples: list[int],
+    man_at: dict[float, Maneuver],
+    burn_info: list[tuple],
+    body: Body,
+    perturbation: Perturbation | None,
+    t0_tdb: float,
+    rtol: float,
+    atol: float,
+    chunk_size: int,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Core arc iterator. Yields (t_chunk, states_chunk) after every chunk_size steps.
+
+    Both propagate_orbit (chunk_size = all steps) and propagate_orbit_chunked
+    (chunk_size = user-chosen) call this so the physics are identical.
+    """
+    y = y0.copy()
+    yielded_first = False
+
+    for i, n_samples in enumerate(arc_samples):
+        t_a, t_b = breakpoints[i], breakpoints[i + 1]
+        if t_b <= t_a:
+            continue
+
+        t_mid = (t_a + t_b) / 2.0
+        arc_perturbation = perturbation
+        for b, m_start, mdot in burn_info:
+            if b.t_start_s <= t_mid < b.t_start_s + b.duration_s:
+                thrust_pert = _make_thrust_perturbation(
+                    b.thrust_n,
+                    np.asarray(b.direction_ric, dtype=float),
+                    m_start,
+                    mdot,
+                    b.t_start_s,
+                )
+                arc_perturbation = (
+                    compose(perturbation, thrust_pert) if perturbation else thrust_pert
+                )
+                break
+
+        rhs = _make_rhs(body.mu, arc_perturbation, t0_tdb)
+        t_eval_arc = np.linspace(t_a, t_b, n_samples)
+
+        start = 0
+        while start < n_samples:
+            end = min(start + chunk_size, n_samples)
+            t_sub = t_eval_arc[start:end]
+            sol = solve_ivp(
+                rhs, (t_sub[0], t_sub[-1]), y,
+                t_eval=t_sub, method="DOP853", rtol=rtol, atol=atol,
+            )
+            t_out = sol.t[1:] if yielded_first else sol.t
+            s_out = sol.y.T[1:] if yielded_first else sol.y.T
+            if t_out.size > 0:
+                yield t_out, s_out
+                yielded_first = True
+            y = sol.y[:, -1].copy()
+            start = end
+
+        if t_b in man_at:
+            dv_inertial = ric_to_inertial(y[:3], y[3:], np.asarray(man_at[t_b].dv_ric))
+            y[3:] += dv_inertial
+
+
 def propagate_orbit(
     state: TwoBodyState,
     duration_s: float,
@@ -192,100 +318,51 @@ def propagate_orbit(
     rtol, atol
         Relative / absolute tolerance for DOP853.
     """
-    # Build the effective base perturbation.
-    if perturbation is None and j2_enabled and body.j2 != 0.0:
-        perturbation = zonal_harmonics(body, n_max=2)
+    y0, eff_pert, breakpoints, arc_samples, man_at, burn_info = _build_propagation_plan(
+        state, duration_s, steps, body, j2_enabled, perturbation,
+        maneuvers, finite_burns, initial_mass_kg,
+    )
+    ts: list[np.ndarray] = []
+    ss: list[np.ndarray] = []
+    for t, s in _iter_arcs(
+        y0, breakpoints, arc_samples, man_at, burn_info,
+        body, eff_pert, t0_tdb, rtol, atol,
+        chunk_size=max(steps, 2),
+    ):
+        ts.append(t)
+        ss.append(s)
+    return np.concatenate(ts), np.vstack(ss)
 
-    mans = sorted(maneuvers or [], key=lambda m: m.t_offset_s)
-    fburns = sorted(finite_burns or [], key=lambda b: b.t_start_s)
 
-    if any(m.t_offset_s > duration_s for m in mans):
-        raise ValueError("manoeuvre occurs after the requested propagation end")
-    if fburns and initial_mass_kg is None:
-        raise ValueError("initial_mass_kg is required when finite_burns are specified")
-    for j in range(len(fburns) - 1):
-        if fburns[j].t_start_s + fburns[j].duration_s > fburns[j + 1].t_start_s + 1e-9:
-            raise ValueError("finite burns must not overlap")
+def propagate_orbit_chunked(
+    state: TwoBodyState,
+    duration_s: float,
+    steps: int = 200,
+    body: Body = EARTH,
+    j2_enabled: bool = False,
+    perturbation: Perturbation | None = None,
+    maneuvers: list[Maneuver] | None = None,
+    finite_burns: list[FiniteBurn] | None = None,
+    initial_mass_kg: float | None = None,
+    t0_tdb: float = 0.0,
+    rtol: float = 1e-10,
+    atol: float = 1e-12,
+    chunk_size: int = 200,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Like propagate_orbit but yields (t_chunk, states_chunk) as each chunk completes.
 
-    # Pre-compute mass state at the start of each burn (accounts for prior burns).
-    current_mass: float = initial_mass_kg or 1.0
-    burn_info: list[tuple[FiniteBurn, float, float]] = []  # (burn, m_start, mdot)
-    for b in fburns:
-        mdot = b.thrust_n / (_G0 * b.isp_s)
-        burn_info.append((b, current_mass, mdot))
-        current_mass = max(current_mass - mdot * b.duration_s, 1.0)
-
-    # Build breakpoints: impulse times + burn starts/ends + endpoints.
-    bp_set: set[float] = {0.0, duration_s}
-    for m in mans:
-        bp_set.add(m.t_offset_s)
-    for b in fburns:
-        bp_set.add(b.t_start_s)
-        bp_set.add(min(b.t_start_s + b.duration_s, duration_s))
-    breakpoints = sorted(bp_set)
-
-    # Distribute output samples across arcs proportionally.
-    total = duration_s if duration_s > 0 else 1.0
-    arc_samples = [
-        max(2, int(round(steps * (breakpoints[i + 1] - breakpoints[i]) / total)))
-        for i in range(len(breakpoints) - 1)
-    ]
-
-    # Index maneuvers by their breakpoint position for O(1) lookup in the loop.
-    man_at: dict[float, Maneuver] = {m.t_offset_s: m for m in mans}
-
-    times_chunks: list[np.ndarray] = []
-    state_chunks: list[np.ndarray] = []
-    y = np.array([*state.r, *state.v], dtype=float)
-
-    for i, n_samples in enumerate(arc_samples):
-        t_a, t_b = breakpoints[i], breakpoints[i + 1]
-        if t_b <= t_a:
-            continue
-
-        # Check whether this arc falls inside a finite burn.
-        t_mid = (t_a + t_b) / 2.0
-        arc_perturbation = perturbation
-        for b, m_start, mdot in burn_info:
-            if b.t_start_s <= t_mid < b.t_start_s + b.duration_s:
-                thrust_pert = _make_thrust_perturbation(
-                    b.thrust_n,
-                    np.asarray(b.direction_ric, dtype=float),
-                    m_start,
-                    mdot,
-                    b.t_start_s,
-                )
-                arc_perturbation = (
-                    compose(perturbation, thrust_pert) if perturbation else thrust_pert
-                )
-                break
-
-        rhs = _make_rhs(body.mu, arc_perturbation, t0_tdb)
-        sol = solve_ivp(
-            rhs,
-            (t_a, t_b),
-            y,
-            t_eval=np.linspace(t_a, t_b, n_samples),
-            method="DOP853",
-            rtol=rtol,
-            atol=atol,
-        )
-
-        # Drop the duplicate sample at every internal join.
-        if i == 0:
-            times_chunks.append(sol.t)
-            state_chunks.append(sol.y.T)
-        else:
-            times_chunks.append(sol.t[1:])
-            state_chunks.append(sol.y.T[1:])
-
-        # Apply impulsive manoeuvre at the right-hand boundary, if any.
-        y = sol.y[:, -1].copy()
-        if t_b in man_at:
-            dv_inertial = ric_to_inertial(y[:3], y[3:], np.asarray(man_at[t_b].dv_ric))
-            y[3:] = y[3:] + dv_inertial
-
-    return np.concatenate(times_chunks), np.vstack(state_chunks)
+    Useful for streaming long integrations to the client while displaying
+    the partial trajectory incrementally.
+    """
+    y0, eff_pert, breakpoints, arc_samples, man_at, burn_info = _build_propagation_plan(
+        state, duration_s, steps, body, j2_enabled, perturbation,
+        maneuvers, finite_burns, initial_mass_kg,
+    )
+    yield from _iter_arcs(
+        y0, breakpoints, arc_samples, man_at, burn_info,
+        body, eff_pert, t0_tdb, rtol, atol,
+        chunk_size=chunk_size,
+    )
 
 
 # --------------------------------------------------------------------------- #

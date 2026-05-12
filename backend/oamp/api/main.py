@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from oamp import __version__
@@ -24,9 +25,15 @@ from oamp.dynamics.cr3bp import (
     propagate_cr3bp,
     wsb_capture_grid,
 )
-from oamp.dynamics.integrators import propagate_symplectic
+from oamp.dynamics.integrators import propagate_symplectic, propagate_symplectic_chunked
 from oamp.dynamics.launch import LaunchConfig, default_falcon9_like, simulate_launch
-from oamp.dynamics.newtonian import FiniteBurn, Maneuver, TwoBodyState, propagate_orbit
+from oamp.dynamics.newtonian import (
+    FiniteBurn,
+    Maneuver,
+    TwoBodyState,
+    propagate_orbit,
+    propagate_orbit_chunked,
+)
 from oamp.dynamics.optimization import optimize_multi_burn
 from oamp.dynamics.perturbations import (
     Vehicle,
@@ -376,6 +383,72 @@ async def propagate(req: PropagateRequest) -> dict:
         "states": states.tolist(),
         "perturbations": active,
     }
+
+
+@app.post("/propagate/stream")
+async def propagate_stream(req: PropagateRequest) -> StreamingResponse:
+    """Like /propagate but streams partial trajectory chunks as NDJSON.
+
+    Each line is a JSON object:
+      - partial chunk: {"t":[...], "states":[[...]], "received_steps":N, "total_steps":M}
+      - final line:    {"done":true, "perturbations":[...]}
+    """
+    body = _resolve_body(req)
+    try:
+        perturbation, active = _build_perturbation(req, body)
+    except HTTPException as exc:
+        raise exc
+    maneuvers = [Maneuver(**m.model_dump()) for m in req.maneuvers]
+    fburns = [FiniteBurn(**b.model_dump()) for b in req.finite_burns]
+    if fburns:
+        active.append(f"finite_burns_{len(fburns)}")
+
+    # Target ~20 chunks regardless of step count; clamp to sensible range.
+    chunk_size = max(50, min(500, req.steps // 20))
+
+    async def _gen():
+        received = 0
+        try:
+            if req.integrator in ("verlet", "yoshida4"):
+                if fburns:
+                    yield json.dumps({"error": "finite burns require the dop853 integrator"}) + "\n"
+                    return
+                gen = propagate_symplectic_chunked(
+                    req.state, req.duration_s, req.steps,
+                    body=body, perturbation=perturbation,
+                    j2_enabled=req.j2_enabled and perturbation is None,
+                    maneuvers=maneuvers, t0_tdb=req.t0_tdb,
+                    method=req.integrator, chunk_size=chunk_size,
+                )
+                active.append(f"integrator_{req.integrator}")
+            else:
+                gen = propagate_orbit_chunked(
+                    req.state, req.duration_s, req.steps,
+                    body=body, perturbation=perturbation,
+                    j2_enabled=req.j2_enabled and perturbation is None,
+                    maneuvers=maneuvers,
+                    finite_burns=fburns or None,
+                    initial_mass_kg=req.initial_mass_kg,
+                    t0_tdb=req.t0_tdb,
+                    chunk_size=chunk_size,
+                )
+
+            for t_chunk, s_chunk in gen:
+                received += len(t_chunk)
+                msg = {
+                    "t": t_chunk.tolist(),
+                    "states": s_chunk.tolist(),
+                    "received_steps": received,
+                    "total_steps": req.steps,
+                }
+                yield json.dumps(msg) + "\n"
+                await asyncio.sleep(0)  # yield to event loop between chunks
+
+            yield json.dumps({"done": True, "perturbations": active}) + "\n"
+        except Exception as exc:
+            yield json.dumps({"error": str(exc)}) + "\n"
+
+    return StreamingResponse(_gen(), media_type="application/x-ndjson")
 
 
 @app.post("/launch")

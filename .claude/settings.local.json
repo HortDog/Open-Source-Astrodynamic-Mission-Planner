@@ -16,7 +16,16 @@
       "Bash(grep -n \"\\\\\\\\\\\\\\\\usepackage\" docs/roadmap_phase2_3.tex)",
       "Bash(where pdflatex *)",
       "Bash(where xelatex *)",
-      "Bash(where latexmk *)"
+      "Bash(where latexmk *)",
+      "Bash(python -m pytest backend/tests/ -x -q)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m pytest tests/ -x -q)",
+      "PowerShell(Get-Command pytest -ErrorAction SilentlyContinue)",
+      "PowerShell(python --version 2>&1)",
+      "PowerShell(pip show pytest 2>&1)",
+      "PowerShell(Get-Command py -ErrorAction SilentlyContinue)",
+      "PowerShell(py --version 2>&1)",
+      "PowerShell(py -3.12 --version 2>&1)",
+      "PowerShell(py --list 2>&1)"
     ]
   }
 }
