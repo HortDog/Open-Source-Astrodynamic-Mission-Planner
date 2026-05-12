@@ -4,6 +4,12 @@ export async function fetchHealth() {
         throw new Error(`health ${r.status}`);
     return r.json();
 }
+export async function spiceStatus() {
+    const r = await fetch("/api/spice/status");
+    if (!r.ok)
+        throw new Error(`spice/status ${r.status}`);
+    return r.json();
+}
 export async function propagate(req) {
     const r = await fetch("/api/propagate", {
         method: "POST",
@@ -15,31 +21,43 @@ export async function propagate(req) {
     return r.json();
 }
 /** Stream a propagation as NDJSON chunks. Yields partial trajectory slices as
- *  they complete so the caller can render the orbit incrementally. */
-export async function* propagateStream(req) {
-    const r = await fetch("/api/propagate/stream", {
+ *  they complete so the caller can render the orbit incrementally. Pass an
+ *  AbortSignal to allow the user to cancel a long-running propagation. */
+export async function* propagateStream(req, signal) {
+    const init = {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
-    });
+    };
+    if (signal)
+        init.signal = signal;
+    const r = await fetch("/api/propagate/stream", init);
     if (!r.ok)
         throw new Error(`propagate/stream ${r.status}: ${await r.text()}`);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "";
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done)
-            break;
-        buf += value;
-        const lines = buf.split("\n");
-        buf = lines.pop();
-        for (const line of lines) {
-            if (line.trim())
-                yield JSON.parse(line);
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            buf += value;
+            const lines = buf.split("\n");
+            buf = lines.pop();
+            for (const line of lines) {
+                if (line.trim())
+                    yield JSON.parse(line);
+            }
         }
+        if (buf.trim())
+            yield JSON.parse(buf);
     }
-    if (buf.trim())
-        yield JSON.parse(buf);
+    finally {
+        try {
+            reader.releaseLock();
+        }
+        catch { /* already released */ }
+    }
 }
 export async function optimizeHohmann(req) {
     const r = await fetch("/api/optimize/hohmann", {
@@ -93,6 +111,22 @@ export async function runLaunch() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "null",
+    });
+    if (!r.ok)
+        throw new Error(`launch ${r.status}: ${await r.text()}`);
+    return r.json();
+}
+export async function launchDefaultConfig() {
+    const r = await fetch("/api/launch/default-config");
+    if (!r.ok)
+        throw new Error(`launch/default-config ${r.status}`);
+    return r.json();
+}
+export async function runLaunchConfig(cfg) {
+    const r = await fetch("/api/launch", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(cfg),
     });
     if (!r.ok)
         throw new Error(`launch ${r.status}: ${await r.text()}`);

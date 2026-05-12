@@ -6,6 +6,13 @@ export async function fetchHealth(): Promise<Health> {
   return r.json();
 }
 
+export type SpiceStatus = { loaded_kernels: string[]; error: string | null };
+export async function spiceStatus(): Promise<SpiceStatus> {
+  const r = await fetch("/api/spice/status");
+  if (!r.ok) throw new Error(`spice/status ${r.status}`);
+  return r.json();
+}
+
 export type Vec3 = [number, number, number];
 export type TwoBodyState = { r: Vec3; v: Vec3 };
 export type VehicleSpec = {
@@ -67,27 +74,37 @@ export type StreamChunk =
   | { error: string };
 
 /** Stream a propagation as NDJSON chunks. Yields partial trajectory slices as
- *  they complete so the caller can render the orbit incrementally. */
-export async function* propagateStream(req: PropagateRequest): AsyncGenerator<StreamChunk> {
-  const r = await fetch("/api/propagate/stream", {
+ *  they complete so the caller can render the orbit incrementally. Pass an
+ *  AbortSignal to allow the user to cancel a long-running propagation. */
+export async function* propagateStream(
+  req: PropagateRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<StreamChunk> {
+  const init: RequestInit = {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(req),
-  });
+  };
+  if (signal) init.signal = signal;
+  const r = await fetch("/api/propagate/stream", init);
   if (!r.ok) throw new Error(`propagate/stream ${r.status}: ${await r.text()}`);
   const reader = r.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buf = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += value;
-    const lines = buf.split("\n");
-    buf = lines.pop()!;
-    for (const line of lines) {
-      if (line.trim()) yield JSON.parse(line) as StreamChunk;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += value;
+      const lines = buf.split("\n");
+      buf = lines.pop()!;
+      for (const line of lines) {
+        if (line.trim()) yield JSON.parse(line) as StreamChunk;
+      }
     }
+    if (buf.trim()) yield JSON.parse(buf) as StreamChunk;
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
   }
-  if (buf.trim()) yield JSON.parse(buf) as StreamChunk;
 }
 
 export type HohmannResponse = {
@@ -203,6 +220,37 @@ export async function runLaunch(): Promise<LaunchResponse> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "null",
+  });
+  if (!r.ok) throw new Error(`launch ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+export type LaunchConfig = {
+  vehicle: {
+    dry_mass_kg: number;
+    prop_mass_kg: number;
+    thrust_n: number;
+    isp_s: number;
+    drag_area_m2?: number;
+    drag_cd?: number;
+  };
+  pitch_start_alt_m?: number;
+  pitch_target_alt_m?: number;
+  pitch_target_deg?: number;
+  coast_after_burnout_s?: number;
+};
+
+export async function launchDefaultConfig(): Promise<LaunchConfig> {
+  const r = await fetch("/api/launch/default-config");
+  if (!r.ok) throw new Error(`launch/default-config ${r.status}`);
+  return r.json();
+}
+
+export async function runLaunchConfig(cfg: LaunchConfig): Promise<LaunchResponse> {
+  const r = await fetch("/api/launch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(cfg),
   });
   if (!r.ok) throw new Error(`launch ${r.status}: ${await r.text()}`);
   return r.json();

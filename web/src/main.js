@@ -1,4 +1,5 @@
-import { cr3bpLagrange, cr3bpManifold, cr3bpPeriodicOrbit, cr3bpPropagate, cr3bpWsb, fetchHealth, optimizeHohmann, optimizeLambert, optimizeMultiBurn, propagate, propagateStream, runLaunch, SimSocket, spiceEphemeris, spiceState, tleByNorad, tleParse, transformStates, } from "./api";
+import { cr3bpLagrange, cr3bpManifold, cr3bpPeriodicOrbit, cr3bpPropagate, cr3bpWsb, fetchHealth, launchDefaultConfig, optimizeHohmann, optimizeLambert, optimizeMultiBurn, propagate, propagateStream, runLaunch, runLaunchConfig, SimSocket, spiceEphemeris, spiceState, spiceStatus, tleByNorad, tleParse, transformStates, } from "./api";
+import { DEG, elementsToState, RAD, stateToElements } from "./kepler";
 import { initRenderer } from "./render/scene";
 const status = document.getElementById("status");
 const version = document.getElementById("version");
@@ -22,8 +23,39 @@ const allButtons = [
     btnLeo, btnLaunch, btnLeoJ2, btnHohmann, btnLambert,
     btnCislunar, btnCr3bp, btnManifold, btnWsb,
 ];
+const btnCancel = document.getElementById("btn-cancel");
+const btnRecenter = document.getElementById("btn-recenter");
+const btnSaveMission = document.getElementById("btn-save-mission");
+const fileLoadMission = document.getElementById("file-load-mission");
+const btnExportTraj = document.getElementById("btn-export-traj");
+const spiceBadge = document.getElementById("spice-badge");
+const chartKindSel = document.getElementById("chart-kind");
 const setStatus = (s) => { status.textContent = s; };
 const showBanner = (msg) => { banner.textContent = msg; banner.classList.add("show"); };
+// J2000 epoch in UTC milliseconds (2000-01-01T11:58:55.816Z).
+const J2000_UTC_MS = Date.UTC(2000, 0, 1, 11, 58, 55, 816);
+// Approximate TT − UTC offset (32.184 s + 37 s leap seconds for post-2017 dates).
+// Backend SPICE module re-derives precise leap seconds; this is good to ~1 s.
+const TT_UTC_OFFSET_S = 69.184;
+/** Convert an ISO-ish "YYYY-MM-DDTHH:MM:SS" UTC string to TDB seconds since J2000.
+ *  Returns 0 for empty input. */
+function utcToTdbSeconds(utc) {
+    if (!utc)
+        return 0;
+    const ms = Date.parse(utc.endsWith("Z") ? utc : utc + "Z");
+    if (!Number.isFinite(ms))
+        return 0;
+    return (ms - J2000_UTC_MS) / 1000 + TT_UTC_OFFSET_S;
+}
+/** Inverse of utcToTdbSeconds: TDB seconds → "YYYY-MM-DDTHH:MM:SS" (UTC). */
+function tdbSecondsToUtcInput(tdb) {
+    if (!Number.isFinite(tdb) || tdb === 0)
+        return "";
+    const utcMs = (tdb - TT_UTC_OFFSET_S) * 1000 + J2000_UTC_MS;
+    const d = new Date(utcMs);
+    // Keep to seconds resolution and strip the trailing "Z" / ".000" for datetime-local.
+    return d.toISOString().slice(0, 19);
+}
 const MU_EARTH = 3.986004418e14;
 const R_EARTH = 6_378_137;
 const R0 = 7_000_000;
@@ -810,11 +842,19 @@ async function showWsb(renderer) {
 const editorState = {
     body: "EARTH",
     frame: "J2000",
+    mode: "J2000",
+    ic_form: "cartesian",
     rx: R0, ry: 0, rz: 0,
     vx: 0, vy: Math.sqrt(MU_EARTH / R0), vz: 0,
+    cr_x: 0.836915, cr_y: 0, cr_z: 0,
+    cr_vx: 0, cr_vy: 0.0, cr_vz: 0,
+    cr_tfin: 6.0,
+    cr_mu: 0.01215,
     duration_s: 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH),
     steps: 400,
     initial_mass_kg: 1000,
+    integrator: "dop853",
+    t0_tdb: 0,
     maneuvers: [],
     j2: false,
     jn_max: 2,
@@ -829,6 +869,74 @@ const editorState = {
     third_body_moon: false,
     third_body_sun: false,
 };
+const PRESETS = {
+    iss: (s) => loadElementsPreset(s, "EARTH", { a: 6_778_137, e: 0.0003, i: 51.6, raan: 0, argp: 0, nu: 0 }),
+    leo500: (s) => loadElementsPreset(s, "EARTH", { a: 6_878_137, e: 0, i: 0, raan: 0, argp: 0, nu: 0 }),
+    sso600: (s) => loadElementsPreset(s, "EARTH", { a: 6_978_137, e: 0, i: 97.78, raan: 0, argp: 0, nu: 0 }),
+    gto: (s) => loadElementsPreset(s, "EARTH", {
+        a: (6_628_137 + 42_164_137) / 2,
+        e: (42_164_137 - 6_628_137) / (42_164_137 + 6_628_137),
+        i: 7, raan: 0, argp: 0, nu: 0,
+    }),
+    geo: (s) => loadElementsPreset(s, "EARTH", { a: 42_164_137, e: 0, i: 0, raan: 0, argp: 0, nu: 0 }),
+    molniya: (s) => loadElementsPreset(s, "EARTH", {
+        a: 26_600_000, e: 0.74, i: 63.4, raan: 0, argp: 270, nu: 0,
+    }),
+    lunar100: (s) => loadElementsPreset(s, "MOON", { a: 1_837_400, e: 0, i: 0, raan: 0, argp: 0, nu: 0 }),
+    eml1_halo: (s) => {
+        s.mode = "CR3BP";
+        s.ic_form = "cr3bp";
+        s.cr_mu = 0.01215;
+        // Approximate L1 Lyapunov seed in CR3BP non-dim units.
+        s.cr_x = 0.836915;
+        s.cr_y = 0;
+        s.cr_z = 0;
+        s.cr_vx = 0;
+        s.cr_vy = 0.0;
+        s.cr_vz = 0;
+        s.cr_tfin = 6.0;
+    },
+    eml2_halo: (s) => {
+        s.mode = "CR3BP";
+        s.ic_form = "cr3bp";
+        s.cr_mu = 0.01215;
+        s.cr_x = 1.155682;
+        s.cr_y = 0;
+        s.cr_z = 0;
+        s.cr_vx = 0;
+        s.cr_vy = 0.0;
+        s.cr_vz = 0;
+        s.cr_tfin = 6.0;
+    },
+};
+function loadElementsPreset(s, body, el) {
+    s.body = body;
+    s.mode = "J2000";
+    s.ic_form = "elements";
+    const mu = BODY[body].mu;
+    const { r, v } = elementsToState({
+        a: el.a, e: el.e, i: el.i * RAD, raan: el.raan * RAD, argp: el.argp * RAD, nu: el.nu * RAD,
+    }, mu);
+    s.rx = r[0];
+    s.ry = r[1];
+    s.rz = r[2];
+    s.vx = v[0];
+    s.vy = v[1];
+    s.vz = v[2];
+    // Default duration: one orbital period (or 6 h for hyperbolae).
+    if (el.a > 0 && el.e < 1) {
+        s.duration_s = 2 * Math.PI * Math.sqrt((el.a * el.a * el.a) / mu);
+    }
+    else {
+        s.duration_s = 6 * 3600;
+    }
+    s.steps = 400;
+}
+// --------------------------------------------------------------------------- //
+//  Latest trajectory cache — used by export, recenter, and chart selector.
+// --------------------------------------------------------------------------- //
+let latestTrajectory = null;
+let streamAbort = null;
 function fillPerturbations() {
     const set = (id, v) => {
         const el = document.getElementById(id);
@@ -876,6 +984,8 @@ function readPerturbations() {
 function fillIc() {
     document.getElementById("ic-body").value = editorState.body;
     document.getElementById("ic-frame").value = editorState.frame;
+    document.getElementById("ic-mode").value = editorState.mode;
+    document.getElementById("ic-form").value = editorState.ic_form;
     document.getElementById("ic-rx").value = String(editorState.rx);
     document.getElementById("ic-ry").value = String(editorState.ry);
     document.getElementById("ic-rz").value = String(editorState.rz);
@@ -885,20 +995,101 @@ function fillIc() {
     document.getElementById("ic-duration").value = editorState.duration_s.toFixed(0);
     document.getElementById("ic-steps").value = String(editorState.steps);
     document.getElementById("ic-mass").value = String(editorState.initial_mass_kg);
+    document.getElementById("ic-integrator").value = editorState.integrator;
+    document.getElementById("ic-epoch").value = tdbSecondsToUtcInput(editorState.t0_tdb);
+    document.getElementById("cr-x").value = String(editorState.cr_x);
+    document.getElementById("cr-y").value = String(editorState.cr_y);
+    document.getElementById("cr-z").value = String(editorState.cr_z);
+    document.getElementById("cr-vx").value = String(editorState.cr_vx);
+    document.getElementById("cr-vy").value = String(editorState.cr_vy);
+    document.getElementById("cr-vz").value = String(editorState.cr_vz);
+    document.getElementById("cr-tfin").value = String(editorState.cr_tfin);
+    document.getElementById("cr-mu").value = String(editorState.cr_mu);
+    // Populate the elements panel from the current Cartesian state.
+    fillElementsFromState();
+    updateIcFormVisibility();
+}
+function fillElementsFromState() {
+    try {
+        const mu = BODY[editorState.body].mu;
+        const el = stateToElements([editorState.rx, editorState.ry, editorState.rz], [editorState.vx, editorState.vy, editorState.vz], mu);
+        document.getElementById("ic-sma").value = (el.a / 1000).toFixed(3);
+        document.getElementById("ic-ecc").value = el.e.toFixed(6);
+        document.getElementById("ic-inc").value = (el.i * DEG).toFixed(3);
+        document.getElementById("ic-raan").value = (el.raan * DEG).toFixed(3);
+        document.getElementById("ic-argp").value = (el.argp * DEG).toFixed(3);
+        document.getElementById("ic-nu").value = (el.nu * DEG).toFixed(3);
+    }
+    catch {
+        /* singular state — leave elements panel as-is */
+    }
+}
+function readElementsToState() {
+    const n = (id) => parseFloat(document.getElementById(id).value);
+    const el = {
+        a: n("ic-sma") * 1000,
+        e: n("ic-ecc"),
+        i: n("ic-inc") * RAD,
+        raan: n("ic-raan") * RAD,
+        argp: n("ic-argp") * RAD,
+        nu: n("ic-nu") * RAD,
+    };
+    if (!Number.isFinite(el.a) || !Number.isFinite(el.e))
+        return;
+    const mu = BODY[editorState.body].mu;
+    const { r, v } = elementsToState(el, mu);
+    editorState.rx = r[0];
+    editorState.ry = r[1];
+    editorState.rz = r[2];
+    editorState.vx = v[0];
+    editorState.vy = v[1];
+    editorState.vz = v[2];
+    // Sync the Cartesian inputs so the user sees the result.
+    document.getElementById("ic-rx").value = String(r[0]);
+    document.getElementById("ic-ry").value = String(r[1]);
+    document.getElementById("ic-rz").value = String(r[2]);
+    document.getElementById("ic-vx").value = String(v[0]);
+    document.getElementById("ic-vy").value = String(v[1]);
+    document.getElementById("ic-vz").value = String(v[2]);
+}
+function updateIcFormVisibility() {
+    const form = editorState.ic_form;
+    document.getElementById("ic-cartesian").style.display = form === "cartesian" ? "block" : "none";
+    document.getElementById("ic-elements").style.display = form === "elements" ? "block" : "none";
+    document.getElementById("ic-cr3bp").style.display = form === "cr3bp" ? "block" : "none";
 }
 function readIc() {
     const n = (id) => parseFloat(document.getElementById(id).value);
     editorState.body = document.getElementById("ic-body").value;
     editorState.frame = document.getElementById("ic-frame").value;
-    editorState.rx = n("ic-rx");
-    editorState.ry = n("ic-ry");
-    editorState.rz = n("ic-rz");
-    editorState.vx = n("ic-vx");
-    editorState.vy = n("ic-vy");
-    editorState.vz = n("ic-vz");
+    editorState.mode = document.getElementById("ic-mode").value;
+    editorState.ic_form = document.getElementById("ic-form").value;
+    if (editorState.ic_form === "elements") {
+        readElementsToState();
+    }
+    else if (editorState.ic_form === "cr3bp") {
+        editorState.cr_x = n("cr-x");
+        editorState.cr_y = n("cr-y");
+        editorState.cr_z = n("cr-z");
+        editorState.cr_vx = n("cr-vx");
+        editorState.cr_vy = n("cr-vy");
+        editorState.cr_vz = n("cr-vz");
+        editorState.cr_tfin = n("cr-tfin");
+        editorState.cr_mu = n("cr-mu");
+    }
+    if (editorState.ic_form !== "elements" && editorState.ic_form !== "cr3bp") {
+        editorState.rx = n("ic-rx");
+        editorState.ry = n("ic-ry");
+        editorState.rz = n("ic-rz");
+        editorState.vx = n("ic-vx");
+        editorState.vy = n("ic-vy");
+        editorState.vz = n("ic-vz");
+    }
     editorState.duration_s = n("ic-duration");
     editorState.steps = parseInt(document.getElementById("ic-steps").value, 10);
     editorState.initial_mass_kg = n("ic-mass");
+    editorState.integrator = document.getElementById("ic-integrator").value;
+    editorState.t0_tdb = utcToTdbSeconds(document.getElementById("ic-epoch").value);
 }
 /** Repopulate the IC fields with a circular equatorial orbit at the body's
  *  default altitude.  Called when the user changes the central-body selector. */
@@ -981,6 +1172,8 @@ function renderManeuverList() {
             const v = parseFloat(el.value);
             if (Number.isFinite(v))
                 editorState.maneuvers[i][k] = v;
+            updateDvBudget();
+            renderEventTimeline();
         });
     });
     list.querySelectorAll("button[data-rm]").forEach((el) => {
@@ -990,11 +1183,287 @@ function renderManeuverList() {
             renderManeuverList();
         });
     });
+    updateDvBudget();
+    renderEventTimeline();
+}
+// --------------------------------------------------------------------------- //
+//  Δv budget pill + event timeline.
+// --------------------------------------------------------------------------- //
+function computeDvBudget() {
+    let imp = 0;
+    let fin = 0;
+    for (const m of editorState.maneuvers) {
+        if (m.kind === "impulsive") {
+            imp += Math.hypot(m.dv_r, m.dv_i, m.dv_c);
+        }
+        else {
+            // Approximate finite-burn Δv via the rocket equation:
+            //   Δv = Isp · g0 · ln(m0 / (m0 − ṁ·τ))
+            const g0 = 9.80665;
+            const mdot = m.thrust_n / (g0 * m.isp_s);
+            const m0 = Math.max(editorState.initial_mass_kg, 1);
+            const mf = Math.max(m0 - mdot * m.duration_s, 1);
+            fin += m.isp_s * g0 * Math.log(m0 / mf);
+        }
+    }
+    return { impulse: imp, finite: fin, total: imp + fin };
+}
+function updateDvBudget() {
+    const pill = document.getElementById("dv-budget");
+    if (!pill)
+        return;
+    const { total, impulse, finite } = computeDvBudget();
+    const parts = [];
+    if (impulse > 0)
+        parts.push(`imp ${(impulse / 1000).toFixed(3)}`);
+    if (finite > 0)
+        parts.push(`fin ${(finite / 1000).toFixed(3)}`);
+    pill.textContent = parts.length
+        ? `Σ|Δv| = ${(total / 1000).toFixed(3)} km/s (${parts.join(" · ")})`
+        : "Σ|Δv| = 0 m/s";
+}
+function renderEventTimeline() {
+    const svg = document.getElementById("event-tl");
+    if (!svg)
+        return;
+    while (svg.firstChild)
+        svg.removeChild(svg.firstChild);
+    const W = svg.clientWidth || 320;
+    const H = 22;
+    const duration = Math.max(editorState.duration_s, 1);
+    const tToX = (t) => Math.min(W - 2, Math.max(2, (t / duration) * W));
+    // Background axis.
+    const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    axis.setAttribute("x1", "0");
+    axis.setAttribute("x2", String(W));
+    axis.setAttribute("y1", String(H / 2));
+    axis.setAttribute("y2", String(H / 2));
+    axis.setAttribute("stroke", "#1a3a1a");
+    axis.setAttribute("stroke-width", "1");
+    svg.appendChild(axis);
+    for (const m of editorState.maneuvers) {
+        if (m.kind === "finite") {
+            const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            rect.setAttribute("x", String(tToX(m.t_offset_s)));
+            rect.setAttribute("y", "2");
+            rect.setAttribute("width", String(Math.max(2, tToX(m.t_offset_s + m.duration_s) - tToX(m.t_offset_s))));
+            rect.setAttribute("height", String(H - 4));
+            rect.setAttribute("fill", "rgba(255,40,20,0.55)");
+            rect.setAttribute("stroke", "#ff5030");
+            svg.appendChild(rect);
+        }
+        else {
+            const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+            c.setAttribute("cx", String(tToX(m.t_offset_s)));
+            c.setAttribute("cy", String(H / 2));
+            c.setAttribute("r", "4");
+            c.setAttribute("fill", "#80ff60");
+            c.setAttribute("stroke", "#020a02");
+            svg.appendChild(c);
+        }
+    }
+}
+// --------------------------------------------------------------------------- //
+//  Inline validation (periapsis below surface, maneuver past horizon, etc.).
+// --------------------------------------------------------------------------- //
+function validateIc() {
+    const warnEl = document.getElementById("ic-warnings");
+    if (!warnEl)
+        return;
+    const warnings = [];
+    const b = BODY[editorState.body];
+    const rmag = Math.hypot(editorState.rx, editorState.ry, editorState.rz);
+    if (editorState.mode === "J2000" && rmag < b.radius) {
+        warnings.push(`|r| = ${(rmag / 1000).toFixed(0)} km is below ${b.label} radius (${(b.radius / 1000).toFixed(0)} km)`);
+    }
+    // Periapsis check via specific energy.
+    if (editorState.mode === "J2000" && rmag > 0) {
+        try {
+            const el = stateToElements([editorState.rx, editorState.ry, editorState.rz], [editorState.vx, editorState.vy, editorState.vz], b.mu);
+            if (el.e < 1) {
+                const rp = el.a * (1 - el.e);
+                if (rp < b.radius) {
+                    warnings.push(`periapsis ${(rp / 1000).toFixed(0)} km is below body surface`);
+                }
+            }
+        }
+        catch { /* singular — skip */ }
+    }
+    for (const m of editorState.maneuvers) {
+        if (m.t_offset_s > editorState.duration_s) {
+            warnings.push(`maneuver at t=${m.t_offset_s.toFixed(0)} s occurs after duration (${editorState.duration_s.toFixed(0)} s)`);
+        }
+        if (m.kind === "finite" && m.t_offset_s + m.duration_s > editorState.duration_s) {
+            warnings.push(`finite burn at t=${m.t_offset_s.toFixed(0)} s extends past duration`);
+        }
+    }
+    warnEl.textContent = warnings.length ? "⚠ " + warnings.join(" · ") : "";
+}
+// --------------------------------------------------------------------------- //
+//  Mission persistence — save/load JSON, autosave to localStorage.
+// --------------------------------------------------------------------------- //
+const LS_KEY = "oamp.mission.v1";
+function snapshotMission() {
+    return JSON.parse(JSON.stringify(editorState));
+}
+function applyMission(m) {
+    // Defensive copy + merge — accept any subset of fields.
+    Object.assign(editorState, m);
+    fillIc();
+    fillPerturbations();
+    renderManeuverList();
+    validateIc();
+}
+function saveMissionFile() {
+    const json = JSON.stringify(snapshotMission(), null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `oamp-mission-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+async function loadMissionFile(file) {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    applyMission(parsed);
+}
+function autosaveMission() {
+    try {
+        localStorage.setItem(LS_KEY, JSON.stringify(snapshotMission()));
+    }
+    catch { /* quota / SSR / private-mode — ignore */ }
+}
+function restoreAutosave() {
+    try {
+        const txt = localStorage.getItem(LS_KEY);
+        if (!txt)
+            return false;
+        const parsed = JSON.parse(txt);
+        Object.assign(editorState, parsed);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+// --------------------------------------------------------------------------- //
+//  Trajectory export (CSV).
+// --------------------------------------------------------------------------- //
+function exportTrajectoryCsv() {
+    if (!latestTrajectory || latestTrajectory.t.length === 0) {
+        setStatus("nothing to export — run a propagation first");
+        return;
+    }
+    const { t, states } = latestTrajectory;
+    const ncol = (states[0]?.length ?? 6);
+    const header = ["t_s", "rx_m", "ry_m", "rz_m", "vx_m_s", "vy_m_s", "vz_m_s"].slice(0, 1 + ncol);
+    const lines = [header.join(",")];
+    for (let i = 0; i < t.length; i++) {
+        const row = [t[i].toString(), ...(states[i] ?? []).map((x) => x.toString())];
+        lines.push(row.join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `oamp-traj-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+// --------------------------------------------------------------------------- //
+//  Footer chart selector — switches between |r|, |v|, specific energy.
+// --------------------------------------------------------------------------- //
+function redrawFooterChart() {
+    if (!latestTrajectory || latestTrajectory.t.length < 2)
+        return;
+    const kind = chartKindSel?.value || "alt";
+    const { t, states } = latestTrajectory;
+    const mu = BODY[editorState.body].mu;
+    let y;
+    let label;
+    if (kind === "speed") {
+        y = states.map((s) => Math.hypot(s[3] ?? 0, s[4] ?? 0, s[5] ?? 0));
+        label = "|v|";
+    }
+    else if (kind === "energy") {
+        y = states.map((s) => {
+            const r = Math.hypot(s[0], s[1], s[2]);
+            const v2 = (s[3] ?? 0) ** 2 + (s[4] ?? 0) ** 2 + (s[5] ?? 0) ** 2;
+            return v2 / 2 - mu / r;
+        });
+        label = "ε";
+    }
+    else {
+        y = states.map((s) => Math.hypot(s[0], s[1], s[2]));
+        label = "|r|";
+    }
+    drawSeries(t, y, label);
+}
+function drawSeries(times, values, label) {
+    const line = document.getElementById("alt-line");
+    const lbl = document.getElementById("alt-label");
+    if (!line || values.length < 2)
+        return;
+    altMinR = Math.min(...values);
+    altMaxR = Math.max(...values);
+    const pad = Math.max((altMaxR - altMinR) * 0.05, Math.abs(altMaxR) * 1e-6, 1);
+    const yLo = altMinR - pad, yHi = altMaxR + pad;
+    const t0 = times[0], tN = times[times.length - 1];
+    const tSpan = Math.max(tN - t0, 1);
+    const pts = new Array(values.length);
+    for (let i = 0; i < values.length; i++) {
+        const x = ((times[i] - t0) / tSpan) * ALT_W;
+        const yy = ALT_H - ((values[i] - yLo) / (yHi - yLo)) * ALT_H;
+        pts[i] = `${x.toFixed(1)},${yy.toFixed(1)}`;
+    }
+    line.setAttribute("points", pts.join(" "));
+    if (lbl) {
+        const fmt = (v) => Math.abs(v) > 1e6 ? (v / 1e6).toFixed(2) + "M" : (v / 1000).toFixed(0) + "k";
+        lbl.textContent = `${label}: ${fmt(altMinR)}…${fmt(altMaxR)}`;
+    }
 }
 async function applyEditor(renderer) {
     readIc();
     readPerturbations();
+    validateIc();
     const b = BODY[editorState.body];
+    // ---- CR3BP path: non-dimensional propagation through /cr3bp/propagate. ----
+    if (editorState.mode === "CR3BP") {
+        setStatus("propagating CR3BP…");
+        const t_span = [0, editorState.cr_tfin];
+        const res = await cr3bpPropagate({
+            state: [editorState.cr_x, editorState.cr_y, editorState.cr_z,
+                editorState.cr_vx, editorState.cr_vy, editorState.cr_vz],
+            t_span,
+            mu: editorState.cr_mu,
+            steps: Math.max(2, Math.min(20000, editorState.steps)),
+        });
+        // Render in non-dim units scaled to the Earth–Moon distance so the scene
+        // matches the J2000 frame visually.
+        const L = EM_LENGTH_M;
+        const states = res.states.map((s) => [
+            s[0] * L, s[1] * L, s[2] * L,
+            s[3] * L, s[4] * L, s[5] * L,
+        ]);
+        latestTrajectory = { t: res.t, states };
+        renderer.setSceneScale(L * 1.5);
+        renderer.setCentralBody(BODY.EARTH.radius);
+        renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
+        moonTrackT = null;
+        moonTrackR = null;
+        latestMoonR = [L, 0, 0];
+        renderer.drawTrajectory(statesToPositions(states));
+        setActiveTrajectory(res.t, states);
+        refreshCameraTarget();
+        const cMin = Math.min(...res.jacobi);
+        const cMax = Math.max(...res.jacobi);
+        setStatus(`CR3BP: ${states.length} samples · Jacobi ${cMin.toFixed(4)}…${cMax.toFixed(4)} (Δ ${(cMax - cMin).toExponential(2)})`);
+        redrawFooterChart();
+        autosaveMission();
+        return;
+    }
     const propReq = {
         state: {
             r: [editorState.rx, editorState.ry, editorState.rz],
@@ -1005,6 +1474,8 @@ async function applyEditor(renderer) {
         body_name: editorState.body,
         mu: b.mu,
         body_radius: b.radius,
+        integrator: editorState.integrator,
+        ...(editorState.t0_tdb !== 0 ? { t0_tdb: editorState.t0_tdb } : {}),
         ...(editorState.j2 ? { j2_enabled: true, jn_max: editorState.jn_max } : {}),
         ...((editorState.drag || editorState.srp) ? {
             vehicle: {
@@ -1044,22 +1515,37 @@ async function applyEditor(renderer) {
     let data;
     if (useStream) {
         setStatus("streaming propagation…");
+        streamAbort = new AbortController();
+        btnCancel.classList.add("show");
         const allT = [];
         const allStates = [];
         let perturbations = [];
-        for await (const chunk of propagateStream(propReq)) {
-            if ("error" in chunk)
-                throw new Error(chunk.error);
-            if (chunk.done) {
-                perturbations = chunk.perturbations;
-                break;
+        try {
+            for await (const chunk of propagateStream(propReq, streamAbort.signal)) {
+                if ("error" in chunk)
+                    throw new Error(chunk.error);
+                if (chunk.done) {
+                    perturbations = chunk.perturbations;
+                    break;
+                }
+                allT.push(...chunk.t);
+                allStates.push(...chunk.states);
+                renderer.drawTrajectory(statesToPositions(allStates));
+                setStatus(`streaming… ${chunk.received_steps} / ${chunk.total_steps} steps`);
+                await new Promise((res) => requestAnimationFrame(() => res()));
             }
-            allT.push(...chunk.t);
-            allStates.push(...chunk.states);
-            // Render partial orbit without colour (full colour pass happens below after all data arrives).
-            renderer.drawTrajectory(statesToPositions(allStates));
-            setStatus(`streaming… ${chunk.received_steps} / ${chunk.total_steps} steps`);
-            await new Promise((res) => requestAnimationFrame(() => res()));
+        }
+        catch (e) {
+            if (e.name === "AbortError") {
+                setStatus(`cancelled at ${allT.length} steps — partial trajectory retained`);
+            }
+            else {
+                throw e;
+            }
+        }
+        finally {
+            btnCancel.classList.remove("show");
+            streamAbort = null;
         }
         data = { t: allT, states: allStates, perturbations };
     }
@@ -1171,6 +1657,9 @@ async function applyEditor(renderer) {
             : undefined;
     renderer.drawTrajectory(statesToPositions(renderedStates), colors);
     setActiveTrajectory(data.t, renderedStates);
+    latestTrajectory = { t: data.t, states: renderedStates };
+    redrawFooterChart();
+    autosaveMission();
     // Active-perturbations badge — what the server actually applied.
     const badge = document.getElementById("pert-active");
     if (badge) {
@@ -1196,9 +1685,13 @@ async function applyEditor(renderer) {
 function resetEditor() {
     editorState.body = "EARTH";
     editorState.frame = "J2000";
+    editorState.mode = "J2000";
+    editorState.ic_form = "cartesian";
     editorState.steps = 400;
     editorState.maneuvers = [];
     editorState.initial_mass_kg = 1000;
+    editorState.integrator = "dop853";
+    editorState.t0_tdb = 0;
     editorState.j2 = false;
     editorState.jn_max = 2;
     editorState.drag = false;
@@ -1213,6 +1706,165 @@ function resetEditor() {
     editorState.third_body_sun = false;
     applyBodyDefaults("EARTH");
     renderManeuverList();
+    validateIc();
+}
+// --------------------------------------------------------------------------- //
+//  Lyapunov + manifold panel (in-editor).
+// --------------------------------------------------------------------------- //
+async function runLyapunovPanel(renderer) {
+    const n = (id) => parseFloat(document.getElementById(id).value);
+    const s = (id) => document.getElementById(id).value;
+    const Lpt = parseInt(s("lyap-L"), 10);
+    const Ax = n("lyap-Ax");
+    const dir = s("lyap-dir");
+    const branch = s("lyap-branch");
+    const duration = n("lyap-dur");
+    const n_samples = parseInt(document.getElementById("lyap-n").value, 10);
+    const info = document.getElementById("lyap-info");
+    info.textContent = "computing Lyapunov orbit…";
+    const orb = await cr3bpPeriodicOrbit({ family: "lyapunov", L_point: Lpt, Ax, mu: editorState.cr_mu });
+    info.textContent = `orbit period ${orb.period.toFixed(3)} (DC res ${orb.dc_residual.toExponential(1)}) · computing manifold…`;
+    const man = await cr3bpManifold({
+        orbit_state: orb.state0,
+        period: orb.period,
+        mu: editorState.cr_mu,
+        direction: dir,
+        branch,
+        n_samples,
+        duration,
+    });
+    // Render orbit + manifold tubes scaled to the Earth–Moon distance.
+    const L = EM_LENGTH_M;
+    const orbitProp = await cr3bpPropagate({
+        state: orb.state0, t_span: [0, orb.period], mu: editorState.cr_mu, steps: 400,
+    });
+    const orbitStates = orbitProp.states.map((p) => [p[0] * L, p[1] * L, p[2] * L, 0, 0, 0]);
+    const tubes = man.trajectories.map((tube) => {
+        const out = new Float32Array(tube.length * 3);
+        for (let i = 0; i < tube.length; i++) {
+            const p = tube[i];
+            out[i * 3 + 0] = p[0] * L;
+            out[i * 3 + 1] = p[1] * L;
+            out[i * 3 + 2] = p[2] * L;
+        }
+        return out;
+    });
+    renderer.setSceneScale(L * 1.5);
+    renderer.setCentralBody(BODY.EARTH.radius);
+    renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
+    renderer.drawTrajectory(statesToPositions(orbitStates));
+    renderer.setManifoldTubes(tubes);
+    setActiveTrajectory(orbitProp.t, orbitStates);
+    latestTrajectory = { t: orbitProp.t, states: orbitStates };
+    info.textContent =
+        `L${Lpt} Lyapunov: T=${orb.period.toFixed(3)}, J=${orb.jacobi.toFixed(4)} · ${tubes.length} manifold tubes (${dir} ${branch})`;
+}
+// --------------------------------------------------------------------------- //
+//  WSB diagnostic panel (in-editor).
+// --------------------------------------------------------------------------- //
+async function runWsbPanel(renderer) {
+    const n = (id) => parseFloat(document.getElementById(id).value);
+    const ni = (id) => parseInt(document.getElementById(id).value, 10);
+    const info = document.getElementById("wsb-info");
+    const altMin = n("wsb-alt-min") * 1000;
+    const altMax = n("wsb-alt-max") * 1000;
+    const nAlt = ni("wsb-alt-n");
+    const nAng = ni("wsb-ang-n");
+    const dur = n("wsb-dur");
+    const esc = n("wsb-esc");
+    const altitudes_m = [];
+    for (let i = 0; i < nAlt; i++)
+        altitudes_m.push(altMin + (altMax - altMin) * (i / Math.max(nAlt - 1, 1)));
+    const angles_rad = [];
+    for (let i = 0; i < nAng; i++)
+        angles_rad.push((2 * Math.PI) * (i / nAng));
+    info.textContent = `computing ${nAlt}×${nAng}=${nAlt * nAng}-cell WSB grid…`;
+    const grid = await cr3bpWsb({
+        altitudes_m, angles_rad, mu: editorState.cr_mu, duration: dur, escape_radius: esc,
+    });
+    // Build a scatter trajectory (one point per captured cell, second cloud for escaped).
+    const L = EM_LENGTH_M;
+    const moonX = (1 - editorState.cr_mu) * L;
+    const moonR_phys = 1737_400; // m
+    const moonR_nondim = moonR_phys / L;
+    const captured = [];
+    const escaped = [];
+    for (let i = 0; i < altitudes_m.length; i++) {
+        const rAlt_m = moonR_phys + altitudes_m[i];
+        const r_nondim = (rAlt_m / L) + moonR_nondim;
+        for (let j = 0; j < angles_rad.length; j++) {
+            const ang = angles_rad[j];
+            const x = moonX + r_nondim * Math.cos(ang) * L;
+            const y = r_nondim * Math.sin(ang) * L;
+            const val = grid.grid[i]?.[j] ?? 0;
+            if (val === 1)
+                captured.push(x, y, 0);
+            else if (val === -1)
+                escaped.push(x, y, 0);
+        }
+    }
+    renderer.setSceneScale(L * 1.5);
+    renderer.setCentralBody(BODY.EARTH.radius);
+    renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
+    if (captured.length > 0) {
+        renderer.drawTrajectory(new Float32Array(captured));
+    }
+    info.textContent =
+        `captured ${captured.length / 3} · escaped ${escaped.length / 3} · ` +
+            `total ${altitudes_m.length * angles_rad.length}`;
+}
+// --------------------------------------------------------------------------- //
+//  Launch config panel (in-editor).
+// --------------------------------------------------------------------------- //
+async function fillLaunchDefaults() {
+    try {
+        const cfg = await launchDefaultConfig();
+        document.getElementById("lc-dry").value = String(cfg.vehicle.dry_mass_kg);
+        document.getElementById("lc-prop").value = String(cfg.vehicle.prop_mass_kg);
+        document.getElementById("lc-thrust").value = String(cfg.vehicle.thrust_n);
+        document.getElementById("lc-isp").value = String(cfg.vehicle.isp_s);
+        document.getElementById("lc-darea").value = String(cfg.vehicle.drag_area_m2 ?? 10);
+        document.getElementById("lc-cd").value = String(cfg.vehicle.drag_cd ?? 0.3);
+        document.getElementById("lc-pstart").value = String(cfg.pitch_start_alt_m ?? 1500);
+        document.getElementById("lc-ptarget").value = String(cfg.pitch_target_alt_m ?? 100_000);
+        document.getElementById("lc-pdeg").value = String(cfg.pitch_target_deg ?? 88);
+        document.getElementById("lc-coast").value = String(cfg.coast_after_burnout_s ?? 200);
+    }
+    catch (e) {
+        document.getElementById("lc-info").textContent =
+            `defaults unavailable: ${e.message}`;
+    }
+}
+async function runLaunchPanel(renderer) {
+    const n = (id) => parseFloat(document.getElementById(id).value);
+    const info = document.getElementById("lc-info");
+    info.textContent = "running launch sim…";
+    const cfg = {
+        vehicle: {
+            dry_mass_kg: n("lc-dry"),
+            prop_mass_kg: n("lc-prop"),
+            thrust_n: n("lc-thrust"),
+            isp_s: n("lc-isp"),
+            drag_area_m2: n("lc-darea"),
+            drag_cd: n("lc-cd"),
+        },
+        pitch_start_alt_m: n("lc-pstart"),
+        pitch_target_alt_m: n("lc-ptarget"),
+        pitch_target_deg: n("lc-pdeg"),
+        coast_after_burnout_s: n("lc-coast"),
+    };
+    const res = await runLaunchConfig(cfg);
+    const positions = statesToPositions(res.states);
+    renderer.setSceneScale(Math.max(BODY.EARTH.radius * 1.2, 1e7));
+    renderer.setCentralBody(BODY.EARTH.radius);
+    renderer.setSecondaryBody(null, 0);
+    renderer.drawTrajectory(positions);
+    setActiveTrajectory(res.t, res.states);
+    latestTrajectory = { t: res.t, states: res.states };
+    redrawFooterChart();
+    info.textContent =
+        `burnout @ ${res.burnout_time_s.toFixed(0)}s · circ Δv ${res.circularization_dv_m_s.toFixed(1)} m/s · ` +
+            `${res.final_periapsis_km.toFixed(0)}×${res.final_apoapsis_km.toFixed(0)} km`;
 }
 // --------------------------------------------------------------------------- //
 //  Solver panel — Hohmann, Lambert, Multi-burn NLP, TLE.
@@ -1344,17 +1996,59 @@ async function runSolver(renderer) {
                 mu: b.mu,
             });
             editorState.duration_s = tfin;
-            // NLP returns inertial Δvs.  Our editor speaks RIC, so we can't 1:1
-            // round-trip without propagating to each epoch; print the result and
-            // let the user adjust.
+            // NLP returns inertial Δvs at each epoch. Convert each to the RIC frame
+            // by propagating the *no-burn* initial state to that epoch and rotating
+            // through the local R̂/Î/Ĉ basis. This lets the editor speak its native
+            // RIC dialect and the maneuver list re-edits correctly.
+            editorState.maneuvers = [];
+            const noBurn = await propagate({
+                state: {
+                    r: [editorState.rx, editorState.ry, editorState.rz],
+                    v: [editorState.vx, editorState.vy, editorState.vz],
+                },
+                duration_s: Math.max(...epochs, tfin),
+                steps: Math.max(200, epochs.length * 50),
+                body_name: editorState.body,
+                mu: b.mu,
+                body_radius: b.radius,
+            });
+            for (let k = 0; k < epochs.length; k++) {
+                const t = epochs[k];
+                // Find nearest sample to epoch t.
+                let lo = 0, hi = noBurn.t.length - 1;
+                while (lo + 1 < hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (noBurn.t[mid] <= t)
+                        lo = mid;
+                    else
+                        hi = mid;
+                }
+                const s = noBurn.states[lo];
+                const rx = s[0], ry = s[1], rz = s[2];
+                const vx = s[3], vy = s[4], vz = s[5];
+                const rmag = Math.hypot(rx, ry, rz);
+                const Rhat = [rx / rmag, ry / rmag, rz / rmag];
+                // C = r × v / |r×v|
+                const cx = ry * vz - rz * vy;
+                const cy = rz * vx - rx * vz;
+                const cz = rx * vy - ry * vx;
+                const cm = Math.hypot(cx, cy, cz);
+                const Chat = [cx / cm, cy / cm, cz / cm];
+                // I = C × R
+                const Ihat = [
+                    Chat[1] * Rhat[2] - Chat[2] * Rhat[1],
+                    Chat[2] * Rhat[0] - Chat[0] * Rhat[2],
+                    Chat[0] * Rhat[1] - Chat[1] * Rhat[0],
+                ];
+                const dv = res.dv_inertial_m_s[k];
+                const dvR = dv[0] * Rhat[0] + dv[1] * Rhat[1] + dv[2] * Rhat[2];
+                const dvI = dv[0] * Ihat[0] + dv[1] * Ihat[1] + dv[2] * Ihat[2];
+                const dvC = dv[0] * Chat[0] + dv[1] * Chat[1] + dv[2] * Chat[2];
+                editorState.maneuvers.push(makeImpulse(t, [dvR, dvI, dvC]));
+            }
             info.innerHTML =
                 `${res.converged ? "✓ converged" : "✗ diverged"} (${res.iterations} iter)<br>` +
-                    `Σ |Δv| = ${fmt(res.total_dv_m_s)} km/s<br>` +
-                    res.dv_inertial_m_s.map((dv, i) => {
-                        const mag = Math.hypot(...dv);
-                        return `Δv${i + 1}@${epochs[i]}s: |${fmt(mag)}| km/s (inertial)`;
-                    }).join("<br>") +
-                    `<br><span style="opacity:.6">(inertial Δv — not auto-loaded as RIC)</span>`;
+                    `Σ |Δv| = ${fmt(res.total_dv_m_s)} km/s · ${epochs.length} burns auto-loaded as RIC`;
         }
         else if (type === "tle") {
             const noradStr = document.getElementById("sv-norad").value;
@@ -1408,6 +2102,30 @@ async function main() {
         setStatus(`backend unreachable: ${e.message}`);
         return;
     }
+    // SPICE kernel status badge — polled once at boot.
+    try {
+        const st = await spiceStatus();
+        if (st.error) {
+            spiceBadge.classList.remove("pending");
+            spiceBadge.classList.add("err");
+            spiceBadge.textContent = "SPICE: error";
+            spiceBadge.title = st.error;
+        }
+        else {
+            spiceBadge.classList.remove("pending");
+            spiceBadge.classList.add("ok");
+            spiceBadge.textContent = `SPICE: ${st.loaded_kernels.length} kernel${st.loaded_kernels.length === 1 ? "" : "s"}`;
+            spiceBadge.title = st.loaded_kernels.length
+                ? st.loaded_kernels.join("\n")
+                : "no kernels loaded — 3rd-body/SRP perturbations and ephemeris-driven Moon will fail";
+        }
+    }
+    catch (e) {
+        spiceBadge.classList.remove("pending");
+        spiceBadge.classList.add("err");
+        spiceBadge.textContent = "SPICE: down";
+        spiceBadge.title = e.message;
+    }
     const wire = (btn, fn) => {
         btn.addEventListener("click", () => {
             selectButton(btn);
@@ -1443,6 +2161,7 @@ async function main() {
             dir_r: 0, dir_i: 1, dir_c: 0,
         });
         renderManeuverList();
+        validateIc();
     });
     document.getElementById("btn-apply")
         .addEventListener("click", () => {
@@ -1468,6 +2187,109 @@ async function main() {
         refreshVehicle();
         renderSolverForm(); // refresh defaults that depend on the body
     });
+    // ---- Initial-state preset dropdown ----
+    document.getElementById("ic-preset")
+        .addEventListener("change", (e) => {
+        const key = e.target.value;
+        const fn = PRESETS[key];
+        if (!fn)
+            return;
+        fn(editorState);
+        fillIc();
+        validateIc();
+        applyEditor(renderer).catch((err) => setStatus(`preset apply failed: ${err.message}`));
+    });
+    // ---- IC-form (Cartesian / Elements / CR3BP) toggle ----
+    document.getElementById("ic-form")
+        .addEventListener("change", (e) => {
+        const newForm = e.target.value;
+        // Sync values across forms before switching, so the user doesn't lose state.
+        if (editorState.ic_form === "elements" && newForm !== "elements")
+            readElementsToState();
+        editorState.ic_form = newForm;
+        if (newForm === "elements")
+            fillElementsFromState();
+        if (newForm === "cr3bp")
+            editorState.mode = "CR3BP";
+        else if (editorState.mode === "CR3BP")
+            editorState.mode = "J2000";
+        document.getElementById("ic-mode").value = editorState.mode;
+        updateIcFormVisibility();
+    });
+    // ---- Propagation mode (J2000 / CR3BP) toggle ----
+    document.getElementById("ic-mode")
+        .addEventListener("change", (e) => {
+        editorState.mode = e.target.value;
+        if (editorState.mode === "CR3BP") {
+            editorState.ic_form = "cr3bp";
+            document.getElementById("ic-form").value = "cr3bp";
+        }
+        updateIcFormVisibility();
+    });
+    // ---- IC duration/maneuver inputs → revalidate + redraw event-timeline ----
+    ["ic-duration", "ic-rx", "ic-ry", "ic-rz", "ic-vx", "ic-vy", "ic-vz"].forEach((id) => {
+        document.getElementById(id)?.addEventListener("input", () => {
+            readIc();
+            validateIc();
+            renderEventTimeline();
+        });
+    });
+    // ---- Recenter camera on spacecraft ----
+    btnRecenter.addEventListener("click", () => {
+        if (latestCraftR) {
+            camTargetSel.value = "craft";
+            renderer.setCameraTarget(latestCraftR);
+        }
+    });
+    // ---- Save / load mission JSON ----
+    btnSaveMission.addEventListener("click", () => saveMissionFile());
+    fileLoadMission.addEventListener("change", async (e) => {
+        const f = e.target.files?.[0];
+        if (!f)
+            return;
+        try {
+            await loadMissionFile(f);
+            setStatus(`loaded mission from ${f.name}`);
+            await applyEditor(renderer);
+        }
+        catch (err) {
+            setStatus(`load failed: ${err.message}`);
+        }
+        e.target.value = ""; // allow reloading the same file
+    });
+    // ---- Trajectory export ----
+    btnExportTraj.addEventListener("click", () => exportTrajectoryCsv());
+    // ---- Cancel-streaming button ----
+    btnCancel.addEventListener("click", () => {
+        if (streamAbort)
+            streamAbort.abort();
+    });
+    // ---- Footer chart kind selector ----
+    chartKindSel.addEventListener("change", () => redrawFooterChart());
+    // ---- Lyapunov panel ----
+    document.getElementById("btn-lyap-run").addEventListener("click", () => {
+        runLyapunovPanel(renderer).catch((e) => (document.getElementById("lyap-info").textContent = `error: ${e.message}`));
+    });
+    // ---- WSB panel ----
+    document.getElementById("btn-wsb-run").addEventListener("click", () => {
+        runWsbPanel(renderer).catch((e) => (document.getElementById("wsb-info").textContent = `error: ${e.message}`));
+    });
+    // ---- Launch config panel ----
+    document.getElementById("btn-lc-defaults").addEventListener("click", () => fillLaunchDefaults().catch((e) => setStatus(`launch defaults: ${e.message}`)));
+    document.getElementById("btn-lc-run").addEventListener("click", () => {
+        runLaunchPanel(renderer).catch((e) => (document.getElementById("lc-info").textContent = `error: ${e.message}`));
+    });
+    // ---- Restore autosaved mission, if any ----
+    if (restoreAutosave()) {
+        fillIc();
+        fillPerturbations();
+        renderManeuverList();
+        validateIc();
+        setStatus("restored last mission from autosave");
+    }
+    else {
+        fillLaunchDefaults().catch(() => { });
+    }
     // Solver panel.
     renderSolverForm();
     document.getElementById("solver-type")

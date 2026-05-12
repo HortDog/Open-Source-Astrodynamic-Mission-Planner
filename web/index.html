@@ -9,48 +9,68 @@
       html, body { margin: 0; height: 100%; background: #020a02; color: #80ff60; font: 13px/1.4 system-ui, sans-serif; }
       #app { display: flex; flex-direction: column; height: 100vh; }
       main { flex: 1; position: relative; min-height: 0; }
-      header { padding: 4px 8px; border-bottom: 1px solid #1a3a1a; display: flex; align-items: center; gap: 8px; }
+      header { padding: 4px 8px; border-bottom: 1px solid #1a3a1a; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       header h1 { margin: 0; font-size: 12px; font-weight: 600; }
       header .ver { opacity: .6; font-family: ui-monospace, monospace; font-size: 11px; }
       header .spacer { flex: 1; }
-      header button {
+      header button, header label.btn {
         background: #061406; color: #80ff60; border: 1px solid #2a602a;
         padding: 3px 8px; border-radius: 3px; cursor: pointer; font: 11px inherit;
       }
-      header button:hover { background: #0d280d; border-color: #40a040; }
+      header button:hover, header label.btn:hover { background: #0d280d; border-color: #40a040; }
       header button[aria-pressed="true"] { background: #1a4a1a; border-color: #60d060; }
+      header .badge { padding: 2px 6px; border-radius: 3px; font: 10px ui-monospace, monospace; }
+      header .badge.ok  { background: #103810; color: #80ff80; border: 1px solid #2a702a; }
+      header .badge.err { background: #380c10; color: #ff8090; border: 1px solid #802a30; }
+      header .badge.pending { background: #1a1a1a; color: #888; border: 1px solid #333; }
       #banner { padding: 3px 8px; background: #3b1d10; color: #ffba94; border-bottom: 1px solid #5a2a18; display: none; }
       #banner.show { display: block; }
       canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; }
       footer { padding: 3px 8px; border-top: 1px solid #1a3a1a; font-family: ui-monospace, monospace; font-size: 11px;
                display: flex; align-items: center; gap: 8px; }
       #scrub { flex: 1; accent-color: #60d060; }
-      #status { white-space: nowrap; min-width: 200px; }
-      /* Maneuver editor sidebar — absolute overlay on the right of the canvas. */
+      #status { white-space: nowrap; min-width: 220px; }
+      #btn-cancel { display: none; background: #3b1d10; border-color: #804020; color: #ffba94;
+                    padding: 2px 8px; border-radius: 3px; cursor: pointer; font: 10px ui-monospace, monospace; }
+      #btn-cancel.show { display: inline-block; }
+      /* Maneuver editor sidebar */
       #editor {
-        position: absolute; top: 8px; right: 8px; bottom: 8px; width: 320px;
+        position: absolute; top: 8px; right: 8px; bottom: 8px; width: 340px;
         background: rgba(6, 20, 6, 0.92); border: 1px solid #2a602a; border-radius: 4px;
         padding: 8px; overflow-y: auto; font-size: 11px;
         display: none; flex-direction: column; gap: 6px;
       }
       #editor.show { display: flex; }
-      #editor h2 { margin: 0 0 4px 0; font-size: 12px; color: #a0ffa0; }
+      #editor h2 { margin: 0 0 4px 0; font-size: 12px; color: #a0ffa0; font-weight: 600; }
+      #editor summary { font-size: 12px; color: #a0ffa0; font-weight: 600; cursor: pointer; outline: none; user-select: none; padding: 2px 0; }
+      #editor summary::-webkit-details-marker { color: #60d060; }
+      #editor details { border-top: 1px solid #1a3a1a; padding-top: 4px; }
+      #editor details > div.body { padding-top: 4px; }
       #editor .section { border-top: 1px solid #1a3a1a; padding-top: 6px; }
       #editor label { display: block; margin: 2px 0; }
-      #editor input[type="number"] {
+      #editor input[type="number"], #editor input[type="text"], #editor input[type="datetime-local"], #editor select {
         width: 100%; background: #020a02; color: #80ff60; border: 1px solid #2a602a;
-        padding: 2px 4px; font: 11px ui-monospace, monospace;
+        padding: 2px 4px; font: 11px ui-monospace, monospace; box-sizing: border-box;
       }
+      #editor input.invalid, #editor select.invalid { border-color: #c04040; background: #1a0808; }
       #editor .vec3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px; }
+      #editor .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
       #editor .maneuver { background: #0a1a0a; padding: 4px; border-radius: 3px; }
       #editor button {
         background: #061406; color: #80ff60; border: 1px solid #2a602a;
         padding: 3px 8px; border-radius: 3px; cursor: pointer; font: 11px inherit;
       }
       #editor button:hover { background: #0d280d; border-color: #40a040; }
-      #editor button.danger { border-color: #803030; color: #ff9080; }
+      #editor button.danger  { border-color: #803030; color: #ff9080; }
       #editor button.primary { background: #1a4a1a; border-color: #60d060; }
       #editor .row { display: flex; gap: 4px; align-items: center; }
+      #editor .pill {
+        display: inline-block; padding: 1px 6px; border-radius: 8px; background: #0a1a0a;
+        border: 1px solid #2a602a; color: #a0ffa0; font: 10px ui-monospace, monospace;
+      }
+      #editor .warn { color: #ff9080; font-size: 10px; padding: 2px 0; min-height: 0; }
+      #editor .info { color: #80c0ff; font-size: 10px; padding: 2px 0; }
+      #event-tl { width: 100%; height: 22px; background: #020a02; border: 1px solid #1a3a1a; margin-top: 4px; cursor: crosshair; }
     </style>
   </head>
   <body>
@@ -58,6 +78,7 @@
       <header>
         <h1>OAMP</h1>
         <span class="ver" id="version"></span>
+        <span class="badge pending" id="spice-badge" title="SPICE kernel status">SPICE: …</span>
         <span class="spacer"></span>
         <button id="btn-leo" aria-pressed="true">LEO orbit (i=51.6°)</button>
         <button id="btn-launch">Launch demo</button>
@@ -69,105 +90,278 @@
         <button id="btn-manifold">L1 Lyapunov + manifold</button>
         <button id="btn-wsb">WSB diagnostic</button>
         <button id="btn-editor">Maneuver editor</button>
+        <button id="btn-recenter" title="Center camera on spacecraft">⎈ recenter</button>
+        <button id="btn-save-mission" title="Save mission as JSON">↓ save</button>
+        <label class="btn" for="file-load-mission" title="Load mission JSON">↑ load
+          <input id="file-load-mission" type="file" accept=".json,application/json" style="display:none" /></label>
+        <button id="btn-export-traj" title="Export trajectory as CSV">⤓ traj</button>
       </header>
       <div id="banner"></div>
       <main>
         <canvas id="scene"></canvas>
         <aside id="editor">
-          <div class="row" style="margin-bottom:4px;gap:4px">
+          <!-- Top: scenario preset + propagation mode -->
+          <div class="row" style="gap:4px">
+            <label style="flex:1">Preset
+              <select id="ic-preset">
+                <option value="">— custom —</option>
+                <option value="iss">ISS 400 km, i=51.6°</option>
+                <option value="leo500">LEO 500 km, circular</option>
+                <option value="sso600">SSO 600 km, i=97.8°</option>
+                <option value="gto">GTO (250×35,786 km)</option>
+                <option value="geo">GEO 35,786 km</option>
+                <option value="molniya">Molniya, i=63.4°</option>
+                <option value="lunar100">Lunar 100 km circular</option>
+                <option value="eml1_halo">EML1 halo seed (CR3BP)</option>
+                <option value="eml2_halo">EML2 halo seed (CR3BP)</option>
+              </select>
+            </label>
+            <label style="flex:1">Mode
+              <select id="ic-mode">
+                <option value="J2000">J2000 / Cartesian</option>
+                <option value="CR3BP">CR3BP (non-dim)</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="row" style="gap:4px">
             <label style="flex:1">Central body
-              <select id="ic-body" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;padding:2px 4px;font:11px ui-monospace, monospace">
+              <select id="ic-body">
                 <option value="EARTH">Earth</option>
                 <option value="MOON">Moon</option>
               </select>
             </label>
             <label style="flex:1">View frame
-              <select id="ic-frame" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;padding:2px 4px;font:11px ui-monospace, monospace">
+              <select id="ic-frame">
                 <option value="J2000">Inertial J2000</option>
                 <option value="EM_SYNODIC">EM synodic</option>
               </select>
             </label>
           </div>
-          <h2>Initial state (BCI, m / m/s)</h2>
-          <div class="vec3">
-            <input id="ic-rx" type="number" step="1000" />
-            <input id="ic-ry" type="number" step="1000" />
-            <input id="ic-rz" type="number" step="1000" />
+
+          <!-- IC: Cartesian vs Elements toggle -->
+          <div class="row" style="gap:4px">
+            <h2 style="flex:1;margin:0">Initial state</h2>
+            <select id="ic-form" style="width:auto">
+              <option value="cartesian">Cartesian (m, m/s)</option>
+              <option value="elements">Elements (km, deg)</option>
+              <option value="cr3bp">CR3BP non-dim</option>
+            </select>
           </div>
-          <div class="vec3">
-            <input id="ic-vx" type="number" step="10" />
-            <input id="ic-vy" type="number" step="10" />
-            <input id="ic-vz" type="number" step="10" />
+
+          <div id="ic-cartesian">
+            <div class="vec3">
+              <input id="ic-rx" type="number" step="1000" placeholder="rx (m)" />
+              <input id="ic-ry" type="number" step="1000" placeholder="ry (m)" />
+              <input id="ic-rz" type="number" step="1000" placeholder="rz (m)" />
+            </div>
+            <div class="vec3" style="margin-top:3px">
+              <input id="ic-vx" type="number" step="10" placeholder="vx (m/s)" />
+              <input id="ic-vy" type="number" step="10" placeholder="vy (m/s)" />
+              <input id="ic-vz" type="number" step="10" placeholder="vz (m/s)" />
+            </div>
           </div>
-          <div class="row">
+
+          <div id="ic-elements" style="display:none">
+            <div class="grid2">
+              <label>a (km)<input id="ic-sma" type="number" step="10" /></label>
+              <label>e<input id="ic-ecc" type="number" step="0.01" min="0" /></label>
+              <label>i (deg)<input id="ic-inc" type="number" step="0.5" /></label>
+              <label>Ω (deg)<input id="ic-raan" type="number" step="0.5" /></label>
+              <label>ω (deg)<input id="ic-argp" type="number" step="0.5" /></label>
+              <label>ν (deg)<input id="ic-nu" type="number" step="0.5" /></label>
+            </div>
+          </div>
+
+          <div id="ic-cr3bp" style="display:none">
+            <div class="vec3">
+              <input id="cr-x" type="number" step="0.001" placeholder="x" />
+              <input id="cr-y" type="number" step="0.001" placeholder="y" />
+              <input id="cr-z" type="number" step="0.001" placeholder="z" />
+            </div>
+            <div class="vec3" style="margin-top:3px">
+              <input id="cr-vx" type="number" step="0.01" placeholder="vx" />
+              <input id="cr-vy" type="number" step="0.01" placeholder="vy" />
+              <input id="cr-vz" type="number" step="0.01" placeholder="vz" />
+            </div>
+            <div class="row" style="margin-top:3px">
+              <label style="flex:1">t_final (non-dim)
+                <input id="cr-tfin" type="number" step="0.1" value="6.0" />
+              </label>
+              <label style="flex:1">mu
+                <input id="cr-mu" type="number" step="0.0001" value="0.01215" />
+              </label>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:3px">
             <label style="flex:1">Duration (s)
               <input id="ic-duration" type="number" step="60" />
             </label>
-            <label>Steps
+            <label style="flex:1">Steps
               <input id="ic-steps" type="number" step="50" min="2" max="20000" />
             </label>
-            <label>Mass (kg)
+            <label style="flex:1">Mass (kg)
               <input id="ic-mass" type="number" step="100" min="1" value="1000" />
             </label>
-            <label style="white-space:nowrap"><input id="ic-stream" type="checkbox" /> Live preview</label>
           </div>
-          <div class="section">
-            <h2>Perturbations</h2>
-            <label class="row" style="gap:6px">
-              <input id="pert-j2" type="checkbox" /> Zonal harmonics J2…
-              <select id="pert-jn-max" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px inherit">
-                <option value="2">J2</option>
-                <option value="3">J3</option>
-                <option value="4">J4</option>
-                <option value="5">J5</option>
-                <option value="6">J6</option>
+          <div class="row" style="margin-top:3px">
+            <label style="flex:1">Integrator
+              <select id="ic-integrator" title="DOP853: adaptive RK8 (default). Verlet/Yoshida: symplectic, energy-preserving for long arcs.">
+                <option value="dop853">DOP853 (adaptive)</option>
+                <option value="verlet">Verlet (symplectic)</option>
+                <option value="yoshida4">Yoshida 4 (symplectic)</option>
               </select>
             </label>
-            <label class="row" style="margin-top:3px;gap:6px">
-              <input id="pert-drag" type="checkbox" /> Atmospheric drag
-              <select id="pert-drag-model" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px inherit">
-                <option value="exponential">exponential</option>
-                <option value="msis">MSIS</option>
-              </select>
+            <label style="flex:1">Epoch (UTC)
+              <input id="ic-epoch" type="datetime-local" step="1" title="t0 for SPICE-dependent perturbations (3rd body, SRP)" />
             </label>
-            <label style="margin-top:3px"><input id="pert-srp" type="checkbox" /> Solar radiation pressure</label>
-            <label style="margin-top:3px"><input id="pert-3b-moon" type="checkbox" /> Third body: Moon</label>
-            <label style="margin-top:3px"><input id="pert-3b-sun" type="checkbox" /> Third body: Sun</label>
-            <div id="pert-vehicle" style="display:none; margin-top:4px">
-              <div class="vec3">
-                <label>mass (kg)<input id="pert-mass" type="number" value="500" step="10" min="1" /></label>
-                <label>drag A (m²)<input id="pert-area" type="number" value="4" step="0.5" min="0.1" /></label>
-                <label>Cd<input id="pert-cd" type="number" value="2.2" step="0.1" min="0" /></label>
+            <label style="white-space:nowrap"><input id="ic-stream" type="checkbox" /> Live</label>
+          </div>
+          <div id="ic-warnings" class="warn"></div>
+
+          <details>
+            <summary>Perturbations</summary>
+            <div class="body">
+              <label class="row" style="gap:6px">
+                <input id="pert-j2" type="checkbox" /> Zonal harmonics J2…
+                <select id="pert-jn-max" style="width:auto">
+                  <option value="2">J2</option>
+                  <option value="3">J3</option>
+                  <option value="4">J4</option>
+                  <option value="5">J5</option>
+                  <option value="6">J6</option>
+                </select>
+              </label>
+              <label class="row" style="margin-top:3px;gap:6px">
+                <input id="pert-drag" type="checkbox" /> Atmospheric drag
+                <select id="pert-drag-model" style="width:auto">
+                  <option value="exponential">exponential</option>
+                  <option value="msis">MSIS</option>
+                </select>
+              </label>
+              <label style="margin-top:3px"><input id="pert-srp" type="checkbox" /> Solar radiation pressure</label>
+              <label style="margin-top:3px"><input id="pert-3b-moon" type="checkbox" /> Third body: Moon</label>
+              <label style="margin-top:3px"><input id="pert-3b-sun" type="checkbox" /> Third body: Sun</label>
+              <div id="pert-vehicle" style="display:none; margin-top:4px">
+                <div class="vec3">
+                  <label>mass (kg)<input id="pert-mass" type="number" value="500" step="10" min="1" /></label>
+                  <label>drag A (m²)<input id="pert-area" type="number" value="4" step="0.5" min="0.1" /></label>
+                  <label>Cd<input id="pert-cd" type="number" value="2.2" step="0.1" min="0" /></label>
+                </div>
+                <div class="vec3" style="margin-top:3px">
+                  <label>SRP A (m²)<input id="pert-srp-area" type="number" value="4" step="0.5" min="0.1" /></label>
+                  <label>Cr<input id="pert-srp-cr" type="number" value="1.5" step="0.1" min="0" max="2" /></label>
+                  <span></span>
+                </div>
               </div>
-              <div class="vec3" style="margin-top:3px">
-                <label>SRP A (m²)<input id="pert-srp-area" type="number" value="4" step="0.5" min="0.1" /></label>
-                <label>Cr<input id="pert-srp-cr" type="number" value="1.5" step="0.1" min="0" max="2" /></label>
-                <span></span>
+              <div id="pert-active" style="margin-top:4px; font-family: ui-monospace, monospace; font-size: 10px; opacity:.75"></div>
+            </div>
+          </details>
+
+          <details>
+            <summary>Solvers</summary>
+            <div class="body">
+              <label>Type
+                <select id="solver-type">
+                  <option value="hohmann">Hohmann coplanar transfer</option>
+                  <option value="lambert">Lambert intercept</option>
+                  <option value="multi-burn">Multi-burn NLP (CasADi)</option>
+                  <option value="tle">TLE ingest (SGP4)</option>
+                </select>
+              </label>
+              <div id="solver-form" style="margin-top:4px"></div>
+              <div class="row" style="margin-top:4px">
+                <button id="btn-solve" class="primary" style="flex:1">Solve &amp; load into editor</button>
               </div>
+              <div id="solver-info" style="margin-top:4px;font-family:ui-monospace,monospace;font-size:10px;opacity:.85"></div>
             </div>
-            <div id="pert-active" style="margin-top:4px; font-family: ui-monospace, monospace; font-size: 10px; opacity:.75"></div>
-          </div>
-          <div class="section">
-            <h2>Solvers</h2>
-            <label>Type
-              <select id="solver-type" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;padding:2px 4px;font:11px ui-monospace, monospace">
-                <option value="hohmann">Hohmann coplanar transfer</option>
-                <option value="lambert">Lambert intercept</option>
-                <option value="multi-burn">Multi-burn NLP (CasADi)</option>
-                <option value="tle">TLE ingest (SGP4)</option>
-              </select>
-            </label>
-            <div id="solver-form" style="margin-top:4px"></div>
-            <div class="row" style="margin-top:4px">
-              <button id="btn-solve" class="primary" style="flex:1">Solve &amp; load into editor</button>
+          </details>
+
+          <details open>
+            <summary>Maneuvers (RIC frame) <span class="pill" id="dv-budget">Σ|Δv| = 0 m/s</span></summary>
+            <div class="body">
+              <div id="man-list"></div>
+              <svg id="event-tl"></svg>
+              <button id="btn-add-man" style="margin-top: 4px">+ Add maneuver</button>
             </div>
-            <div id="solver-info" style="margin-top:4px;font-family:ui-monospace,monospace;font-size:10px;opacity:.85"></div>
-          </div>
-          <div class="section">
-            <h2>Maneuvers (RIC frame)</h2>
-            <div id="man-list"></div>
-            <button id="btn-add-man" style="margin-top: 6px">+ Add maneuver</button>
-          </div>
+          </details>
+
+          <details>
+            <summary>CR3BP — Lyapunov &amp; manifolds</summary>
+            <div class="body">
+              <div class="row" style="gap:4px">
+                <label style="flex:1">L point
+                  <select id="lyap-L"><option value="1">L1</option><option value="2">L2</option></select>
+                </label>
+                <label style="flex:1">Ax
+                  <input id="lyap-Ax" type="number" step="0.005" min="0.005" max="0.15" value="0.04" />
+                </label>
+              </div>
+              <div class="row" style="gap:4px;margin-top:3px">
+                <label style="flex:1">Direction
+                  <select id="lyap-dir"><option value="unstable">unstable</option><option value="stable">stable</option></select>
+                </label>
+                <label style="flex:1">Branch
+                  <select id="lyap-branch"><option value="+">+</option><option value="-">−</option></select>
+                </label>
+              </div>
+              <div class="row" style="gap:4px;margin-top:3px">
+                <label style="flex:1">duration
+                  <input id="lyap-dur" type="number" step="0.5" min="1" max="20" value="6.0" />
+                </label>
+                <label style="flex:1">samples
+                  <input id="lyap-n" type="number" step="4" min="4" max="200" value="40" />
+                </label>
+              </div>
+              <div class="row" style="margin-top:3px">
+                <button id="btn-lyap-run" class="primary" style="flex:1">Compute Lyapunov + manifold</button>
+              </div>
+              <div id="lyap-info" class="info"></div>
+            </div>
+          </details>
+
+          <details>
+            <summary>WSB diagnostic</summary>
+            <div class="body">
+              <div class="grid2">
+                <label>alt min (km)<input id="wsb-alt-min" type="number" step="100" value="100" /></label>
+                <label>alt max (km)<input id="wsb-alt-max" type="number" step="100" value="5000" /></label>
+                <label>n_alt<input id="wsb-alt-n" type="number" step="1" min="2" max="40" value="12" /></label>
+                <label>n_angle<input id="wsb-ang-n" type="number" step="1" min="2" max="40" value="12" /></label>
+                <label>duration<input id="wsb-dur" type="number" step="0.5" min="1" max="20" value="6.0" /></label>
+                <label>escape r<input id="wsb-esc" type="number" step="0.5" min="1" max="5" value="2.0" /></label>
+              </div>
+              <div class="row" style="margin-top:3px">
+                <button id="btn-wsb-run" class="primary" style="flex:1">Compute WSB grid</button>
+              </div>
+              <div id="wsb-info" class="info"></div>
+            </div>
+          </details>
+
+          <details>
+            <summary>Launch config</summary>
+            <div class="body">
+              <div class="grid2">
+                <label>dry mass (kg)<input id="lc-dry" type="number" step="100" /></label>
+                <label>prop mass (kg)<input id="lc-prop" type="number" step="100" /></label>
+                <label>thrust (N)<input id="lc-thrust" type="number" step="1000" /></label>
+                <label>Isp (s)<input id="lc-isp" type="number" step="1" /></label>
+                <label>drag area (m²)<input id="lc-darea" type="number" step="1" /></label>
+                <label>Cd<input id="lc-cd" type="number" step="0.05" /></label>
+                <label>pitch start (m)<input id="lc-pstart" type="number" step="100" /></label>
+                <label>pitch target (m)<input id="lc-ptarget" type="number" step="1000" /></label>
+                <label>pitch angle (°)<input id="lc-pdeg" type="number" step="1" /></label>
+                <label>coast (s)<input id="lc-coast" type="number" step="10" /></label>
+              </div>
+              <div class="row" style="margin-top:3px">
+                <button id="btn-lc-defaults">Defaults</button>
+                <button id="btn-lc-run" class="primary" style="flex:1">Run launch</button>
+              </div>
+              <div id="lc-info" class="info"></div>
+            </div>
+          </details>
+
           <div class="section row">
             <button id="btn-apply" class="primary">Propagate</button>
             <button id="btn-reset">Reset to LEO</button>
@@ -177,8 +371,16 @@
       </main>
       <footer>
         <span id="status">init…</span>
+        <button id="btn-cancel" title="Cancel running propagation">cancel</button>
         <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
         <span id="scrub-info"></span>
+        <label style="display:flex;align-items:center;gap:3px;font-size:10px">chart
+          <select id="chart-kind" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
+            <option value="alt">|r|</option>
+            <option value="speed">|v|</option>
+            <option value="energy">specific E</option>
+          </select>
+        </label>
         <svg id="alt-chart" width="200" height="30" xmlns="http://www.w3.org/2000/svg"
              style="display:block;background:#020a02;border:1px solid #1a3a1a">
           <polyline id="alt-line" points="" fill="none" stroke="#80ff60" stroke-width="1" />
