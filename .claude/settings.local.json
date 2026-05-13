@@ -25,7 +25,9 @@
       "PowerShell(Get-Command py -ErrorAction SilentlyContinue)",
       "PowerShell(py --version 2>&1)",
       "PowerShell(py -3.12 --version 2>&1)",
-      "PowerShell(py --list 2>&1)"
+      "PowerShell(py --list 2>&1)",
+      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\Users\\\\Horto\\\\Documents\\\\GitHub\\\\Open Source Astrodynamic Mission Planning\\\\web\\\\public\\\\data\" -Force)",
+      "PowerShell(Invoke-WebRequest -Uri \"https://cdn.jsdelivr.net/gh/martynafford/natural-earth-geojson@master/110m/physical/ne_110m_coastline.json\" -OutFile \"c:\\\\Users\\\\Horto\\\\Documents\\\\GitHub\\\\Open Source Astrodynamic Mission Planning\\\\web\\\\public\\\\data\\\\ne_110m_coastline.json\")"
     ]
   }
 }

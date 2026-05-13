@@ -30,10 +30,11 @@ export const GRATICULE: ReadonlyArray<ReadonlyArray<LL>> = [
   antiMeridian,
 ];
 
-// Natural Earth 110m coastline. ~2 000 vertices total, 96 KB JSON.
-// jsDelivr mirrors GitHub releases with permissive CORS.
-const COASTLINE_URL =
-  "https://cdn.jsdelivr.net/gh/martynafford/natural-earth-geojson@master/110m/physical/ne_110m_coastline.json";
+// Natural Earth 110m coastline — bundled in the repo at
+// `web/public/data/ne_110m_coastline.json` (~237 KB GeoJSON, ~2 000 vertices).
+// Served same-origin by Vite at /data/ in both dev and prod; no network
+// dependency, no CORS concerns, no CDN flakiness.
+const COASTLINE_URL = "/data/ne_110m_coastline.json";
 
 type GeoJsonGeom =
   | { type: "LineString"; coordinates: Array<[number, number]> }

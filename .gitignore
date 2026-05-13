@@ -22,9 +22,11 @@ dist/
 Thumbs.db
 
 # Local data
-data/kernels/*.bsp
-data/kernels/*.tpc
-data/kernels/*.tls
+#  SPICE kernels (data/kernels/*.bsp etc.) and the Natural Earth coastline
+#  (web/public/data/*) are now tracked in this repo so a fresh clone runs
+#  without any runtime network fetches. `pixi run kernels` is only needed
+#  when bumping kernel versions; CI verifies sha256 in manifest.toml.
+#  Only the transient runtime cache stays ignored:
 data/cache/
 
 # D2 renders
