@@ -78,7 +78,7 @@ play/pause animation with ×1…×10M speed range, past-as-solid / future-as-
 dashed trajectory rendering, Natural Earth coastline overlay on the Earth
 wireframe.
 
-## What's coming next
+## What's the plan?
 
 **Phase 5 — Real star field & astro-navigation.** Render a real celestial
 sphere from a star catalogue (Hipparcos / Yale Bright Star) so the
