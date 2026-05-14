@@ -29,6 +29,5 @@ Thumbs.db
 #  Only the transient runtime cache stays ignored:
 data/cache/
 
-# D2 renders
-docs/*.svg
-docs/*.png
+# ingnore AI Agent files
+.claude/

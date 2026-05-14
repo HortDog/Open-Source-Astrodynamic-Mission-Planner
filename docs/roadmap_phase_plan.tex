@@ -40,7 +40,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\small\textcolor{dimgreen}{OAMP — Development Roadmap}}
-\fancyhead[R]{\small\textcolor{dimgreen}{Phases 2--5}}
+\fancyhead[R]{\small\textcolor{dimgreen}{Phases 1--5 + stretch}}
 \fancyfoot[C]{\small\textcolor{dimgreen}{\thepage}}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\headrule}{\hbox to\headwidth{\color{dimgreen}\leaders\hrule height \headrulewidth\hfill}}
@@ -77,13 +77,14 @@
     {\Huge\bfseries Open Source Astrodynamic\\[0.3em]
      Mission Planning}\\[1.5em]
     {\LARGE\color{accentcyan} Development Roadmap}\\[0.8em]
-    {\large Phases 2 \& 3}\\[3cm]
+    {\large Phases 1--5 + Stretch Goals}\\[3cm]
     \textcolor{phosphor!60!black}{\rule{0.5\textwidth}{0.4pt}}\\[1em]
     {\normalsize
-      Precision Newtonian Mission Design \quad\textbullet\quad
-      Post-Newtonian \& General Relativity}\\[2em]
+      Precision Newtonian \quad\textbullet\quad CR3BP \&
+      Low-Energy Transfers \quad\textbullet\quad\\[0.2em]
+      Star Field \& Astro-Navigation \quad\textbullet\quad GR (stretch)}\\[2em]
     {\small\color{phosphor!60!black}
-      Apache-2.0 \quad|\quad HortDog \quad|\quad \today}
+      AGPL-3.0 \quad|\quad HortDog \quad|\quad \today}
   \end{center}
 \end{titlepage}
 
@@ -104,37 +105,61 @@
 Phase~1 delivered the project skeleton: a Newtonian $+$~J2 propagator with
 DOP853 integration, an open-loop launch simulator, a SPICE kernel wrapper with
 reproducibility-locked manifests, and a WebGPU~3D viewer showing three orbital
-scenarios. All 10 unit tests pass; the stack is clean (ruff, TypeScript strict).
+scenarios.
 
-\textbf{Phase~2} keeps the physics Newtonian but raises the fidelity to the
-level needed for real mission design: higher-order gravity, atmospheric drag,
-solar radiation pressure, third-body perturbations, TLE ingest, $\Delta v$
-manoeuvre planning, a Lambert/CasADi trajectory optimizer, live WebSocket
-streaming, and a full manoeuvre-editor frontend.
+\textbf{Phase~2} (\emph{shipped}) keeps the physics Newtonian but raises the
+fidelity to the level needed for real mission design: higher-order gravity
+(J2--J6), atmospheric drag (exponential + MSIS), solar radiation pressure,
+third-body perturbations, symplectic integrators (Verlet, Yoshida-4),
+finite-burn modelling, TLE ingest, a Lambert / CasADi trajectory optimizer,
+NDJSON streaming, and a full manoeuvre-editor frontend.
 
 \textbf{Phase~3} (\emph{shipped}) brings every backend capability to the
 sandbox frontend (J2--J6, drag with MSIS, SRP, third-body Moon/Sun, finite
 burns, four solver panels covering Hohmann/Lambert/multi-burn NLP/TLE), adds
 a central-body selector with full Moon support (canonical $\mu$, $R$, $J_n$,
 $\omega$), wires SPICE ephemerides into the renderer as a secondary-body
-wireframe, and ties it together with an end-to-end cislunar TLI demo
-(Lambert + J2 + third-body Moon + finite-burn-ready spacecraft).
+wireframe, and ties it together with an end-to-end cislunar TLI demo.
 
-\textbf{Phase~4} extends the dynamics layer with the circular-restricted
-three-body problem (CR3BP), Lagrange-point computation, periodic-orbit
-families with differential correction, invariant manifold tubes, and
-rotating-frame visualization --- the foundations for low-energy / weak
-stability boundary (WSB) transfers and ballistic capture into lunar orbit.
+\textbf{Phase~4} (\emph{shipped}) extends the dynamics layer with the
+circular-restricted three-body problem (CR3BP), Lagrange-point computation,
+planar Lyapunov periodic orbits via differential correction, invariant
+manifold tubes, EM-synodic rotating-frame visualization, and the
+weak-stability-boundary (WSB) capture diagnostic --- the foundations for
+low-energy transfers and ballistic capture into lunar orbit.
 
-\textbf{Phase~5} adds post-Newtonian (PN) corrections and a full General
-Relativity (GR) geodesic integrator on the DSX/Brumberg--Kopejkin BCRS metric,
-with tetrad thrust modelling and a Ray-backed spacetime metric pre-bake cache
-for performance.
+\textbf{Mission-planner polish} (\emph{shipped}) wraps the editor:
+preset-orbit library (ISS/LEO/SSO/GTO/GEO/Molniya/lunar/halo-seeds), orbital
+elements editor, integrator + epoch + SPICE-status controls, live $\Sigma|\Delta v|$
+budget, save / load mission JSON, autosave to \texttt{localStorage}, CSV
+trajectory export, multi-burn inertial$\to$RIC auto-conversion, event-timeline
+strip, in-editor Lyapunov / WSB / launch sub-panels, animated time scrub with
+solid past / dashed future, real Natural Earth coastline overlay.
+
+\textbf{Phase~5} (\emph{next}) renders a real \textbf{star field} from the
+Hipparcos / Yale Bright Star catalogue and adds \textbf{astro-navigation}:
+star-tracker simulation, lost-in-space attitude solvers, optical landmark
+navigation, and a closed-loop ``navigate by stars'' demo.
+
+\textbf{Future / Stretch Goals} keep the door open for ambitious follow-ups:
+post-Newtonian and full General Relativity propagation (BCRS geodesics,
+tetrad thrust, Ray-backed metric pre-bake cache), tesseral gravity, ground
+tracks / visibility analysis, conjunction analysis against TLE catalogues.
+
+\textbf{``Let your creativity go wild''} closes the document with a
+deliberately open-ended list of blue-sky directions --- tour mode, live
+ISS tracking, generative trajectory design, asteroid mining, solar sails,
+WebXR, audio synthesis, alternate-physics sandboxes --- where the only
+constraint is ``it should be cool.''
 
 \begin{notebox}
-\textbf{Convention lock (unchanged from Phase~1):}
+\textbf{Convention lock:}
 UTC ISO-8601 on the wire; TDB seconds since J2000 (= SPICE ET) internally.
-All SI units in the engine. Apache-2.0 licence.
+All SI units in the engine.
+\textbf{Licence: AGPL-3.0} (switched from Apache-2.0 in Phase~4 polish;
+network-service deployments inherit source-disclosure obligations).
+SPICE kernels and the Natural Earth coastline are now tracked in-tree so a
+fresh clone runs with zero network fetches.
 \end{notebox}
 
 % ============================================================
@@ -676,210 +701,436 @@ a colour-coded map in the synodic frame --- the iconic Belbruno plot.
 \end{itemize}
 
 % ============================================================
-%  PHASE 5  (originally drafted as Phase 3; renumbered after the actual
-%  Phase 3 (sandbox integration + Moon) and Phase 4 (CR3BP) were inserted
-%  ahead of it.  Content unchanged.)
+%  PHASE 5 — Real star field & astro-navigation (NEXT)
 % ============================================================
 \newpage
-\section{Phase 5 — Post-Newtonian \& General Relativity}
+\section{Phase 5 — Real Star Field \& Astro-Navigation}
 
 \subsection{Goals}
 
-Provide GR-fidelity propagation for precision science missions: geodetic
-surveying, pulsar timing, deep-space navigation, and any scenario where
-Newtonian errors exceed the mission budget. The Newtonian path remains the
-fast default; GR is opt-in via \texttt{physics: "pn1" | "gr"}.
+Two intertwined deliverables:
 
-\subsection{3a — Post-Newtonian Corrections (Bridge Layer)}
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Star field}: render a real celestial sphere from a standard
+        astrometric catalogue so the background of the WebGPU scene shows
+        the actual sky --- the same view a spacecraft camera would see.
+  \item \textbf{Astro-navigation}: build the algorithms that real
+        spacecraft use to determine attitude and position from that sky:
+        star-tracker simulation, lost-in-space attitude solvers, optical
+        landmark / planet-limb navigation, and a closed-loop ``navigate by
+        stars'' demo that corrects a deliberately noisy propagator.
+\end{enumerate}
 
-PN corrections are additive accelerations on top of the existing DOP853
-integrator — no new integrator required. This makes validation straightforward:
-the PN limit must reproduce known analytic results before the full GR engine
-is trusted.
+These pair naturally: the star field is the rendering substrate, the
+astro-nav layer is the application that uses it for a meaningful purpose.
 
-\subsubsection{Schwarzschild (1PN)}
+\subsection{Pillar A --- Star catalogue \& renderer}
 
-The dominant solar-system GR effect. In isotropic coordinates:
+\subsubsection{5.1 Catalogue ingest}
 
-\begin{equation}
-  \mathbf{a}_\text{Schw} = \frac{\mu}{c^2 r^3}
-  \left[
-    \left(4\frac{\mu}{r} - v^2\right)\mathbf{r}
-    + 4(\mathbf{r}\cdot\mathbf{v})\mathbf{v}
-  \right]
-\end{equation}
+Pull the Hipparcos catalogue (HIP, $\sim$118\,000 stars, magnitude limit
+$\sim$12.5) and the Yale Bright Star Catalogue (BSC5, $\sim$9\,100 stars,
+magnitude limit $\sim$6.5 --- the naked-eye sky).
 
-\subsubsection{Lense--Thirring (1PN Frame-Dragging)}
-
-Spin--orbit coupling from Earth's angular momentum
-$\mathbf{S} = I_\oplus \boldsymbol{\omega}_\oplus$:
-
-\begin{equation}
-  \mathbf{a}_\text{LT} = \frac{2G}{c^2 r^3}
-  \left[
-    \left(\frac{\mathbf{r}}{r}\times\mathbf{v}\right)\times\mathbf{S}
-    + \frac{3}{r^2}\left(\mathbf{S}\cdot\mathbf{r}\right)
-      \left(\mathbf{r}\times\mathbf{v}\right)
-  \right]
-\end{equation}
-
-\subsubsection{de~Sitter / Geodetic Precession (1PN)}
-
-Solar barycentric contribution to orbit precession:
-
-\begin{equation}
-  \boldsymbol{\Omega}_\text{dS} =
-    \frac{3}{2}\frac{GM_\odot}{c^2 a_\oplus(1-e_\oplus^2)}
-    \frac{\boldsymbol{n}_\oplus \times \mathbf{v}_\oplus}{|\mathbf{v}_\oplus|}
-\end{equation}
-
-\subsubsection{Validation Tests}
-
-\begin{itemize}[noitemsep]
-  \item Mercury perihelion precession: $42.98''$/century $\pm\,0.5\%$
-  \item Gravity Probe~B geodetic precession: $6606.1\,$mas/yr $\pm\,1\%$
-  \item Shapiro delay signature reproduced for Earth--Moon baseline
-  \item PN accelerations vanish in the $c\to\infty$ limit (numerical check)
+\begin{itemize}[leftmargin=*]
+  \item Download once via a manifest-driven script (mirroring
+        \texttt{fetch\_kernels.py}); store the parsed binary in
+        \texttt{data/stars/} as packed Float32 columns
+        ($\alpha$, $\delta$, $V$, $B-V$, ID)
+  \item Sha256-pin in \texttt{backend/oamp/stars/manifest.toml}
+  \item Re-export as a compact bundle for the browser
+        (\texttt{web/public/data/stars\_bsc5.bin}, $\sim$200\,KB)
 \end{itemize}
 
-\subsection{3b — Full GR Geodesic Integrator}
+\subsubsection{5.2 WebGPU star renderer}
 
-\subsubsection{Metric}
+\begin{itemize}[leftmargin=*]
+  \item Point-sprite pipeline: each star is a single instanced quad
+        coloured by $B-V$ via a Planckian colour-temperature lookup,
+        sized by magnitude
+  \item Stars sit at the camera-clip far-plane in the inertial frame, so
+        they don't move with camera position (only orientation)
+  \item Optional constellation outlines (88 IAU constellations) toggled
+        via a footer pill
+  \item Optional star labels for Bayer designations (greek letters) at the
+        $\sim$50 brightest --- togglable; uses canvas-rendered text quads
+  \item Magnitude-limit slider in the footer
+        ($V_\text{lim} \in [-2, 7]$) lets the user dim the field for
+        readability
+\end{itemize}
 
-DSX metric / Brumberg--Kopejkin Barycentric Celestial Reference System (BCRS).
-For a test particle of negligible mass the line element is:
+\subsubsection{5.3 Bright movers}
 
-\begin{equation}
-  ds^2 = -\left(1 - \frac{2w}{c^2}\right)c^2\,dt^2
-         + \left(1 + \frac{2w}{c^2}\right)\delta_{ij}\,dx^i\,dx^j
-         + \mathcal{O}(c^{-4})
-\end{equation}
+Sun, Moon, planets are not in the star catalogue but should appear in the
+same view. Pull positions from SPICE at the active trajectory's time, render
+as small coloured discs sized by apparent magnitude, label them, and slide
+their positions as the time scrubber moves --- so the user sees the Moon
+crossing a constellation across a multi-day trajectory.
 
-where $w = \sum_A G M_A / r_A$ is the Newtonian potential summed over all
-Solar-system bodies $A$.
+\subsection{Pillar B --- Astro-navigation algorithms}
 
-\subsubsection{State Vector}
+\subsubsection{5.4 Star-tracker simulation}
 
-\begin{equation}
-  \mathbf{X} = \bigl(t_\text{TDB},\; x^\mu,\; u^\mu\bigr)
-  \quad\in\quad \mathbb{R}^{1+4+4}
-\end{equation}
-
-with the constraint $g_{\mu\nu} u^\mu u^\nu = -c^2$ monitored as an invariant.
-
-\subsubsection{Equations of Motion}
-
-Geodesic equation with optional non-geodesic thrust $f^\alpha$:
-
-\begin{equation}
-  \frac{Du^\alpha}{d\tau}
-  = \frac{du^\alpha}{d\tau}
-    + \Gamma^\alpha{}_{\mu\nu}\, u^\mu u^\nu
-  = f^\alpha
-\end{equation}
-
-Christoffel symbols $\Gamma^\alpha{}_{\mu\nu}$ are computed analytically from
-the PN metric expansion (no numerical differentiation).
-
-\subsubsection{Integrator}
-
-DOP853 on the 8D geodesic state with adaptive step-size; fallback to a
-symplectic Runge--Kutta--Nyström for long arcs. The norm constraint
-$g_{\mu\nu}u^\mu u^\nu + c^2$ is logged as a quality indicator.
-
-\subsubsection{Endpoint}
-
-\texttt{POST /propagate/gr} — accepts BCRS initial conditions in SI plus
-coordinate time span. Returns proper time $\tau$, coordinate trajectory
-$x^\mu(\tau)$, and the 4-velocity $u^\mu(\tau)$.
-
-\subsection{3c — Tetrad Thrust Model}
-
-Converts coordinate-frame thrust commands to the local orthonormal tetrad:
-
-\begin{enumerate}[noitemsep]
-  \item Build tetrad $e^\mu{}_{(a)}$ from $u^\mu$ and the spacecraft attitude
-  \item Decompose thrust in the tetrad frame:
-        $f^\alpha = (f^{\hat{0}}, f^{\hat{1}}, f^{\hat{2}}, f^{\hat{3}})$
-  \item Inject as right-hand side of the non-geodesic equation above
-\end{enumerate}
-
-\texttt{POST /propagate/gr} accepts \texttt{thrust\_tetrad\_N: [float, float, float]}
-(body-frame thrust in Newtons; frame defined relative to $u^\mu$ and a
-reference attitude quaternion).
-
-\subsection{3d — Multi-body Metric Pre-bake (Ray Workers)}
-
-\subsubsection{Motivation}
-
-Evaluating the BCRS metric and its derivatives at every integration step for
-every Solar-system body at full SPICE fidelity is the dominant cost of GR
-propagation (${\sim}100\times$ slower than Newtonian). Pre-baking the metric
-on a 4D grid eliminates repeated SPICE calls.
-
-\subsubsection{Implementation}
-
-\begin{enumerate}[noitemsep]
-  \item A Ray actor pool (\texttt{metric\_build}) samples $w(\mathbf{r}, t)$
-        and its spatial gradients on a Cartesian grid over the mission window
-  \item Results stored as HDF5 in \texttt{data/metric\_cache/} with a
-        SHA256 manifest (same pattern as SPICE kernels)
-  \item The GR integrator interpolates bilinearly in space and linearly in time
-        — typically ${\lesssim}100\,\mu$s per step vs ${\sim}10$~ms for live SPICE
-\end{enumerate}
+Given a body-frame attitude quaternion $q_\text{B/I}$ and a tracker FOV
+$\theta$, return the list of catalogue stars in the FOV with simulated
+pixel coordinates and a noise model
+($\sigma_\text{centroid} \sim 0.5\,$arcsec, optional bias).
+Endpoint \texttt{POST /astro/tracker}:
 
 \begin{verbatim}
-pixi run -e full build-metric \
-  --start 2025-01-01 --end 2025-06-01 \
-  --bodies earth,moon,sun,jupiter \
-  --resolution-km 500
+{
+  "q_bi":  [w, x, y, z],
+  "fov_rad": 0.349,                # 20 deg
+  "mag_limit": 6.0,
+  "noise_arcsec": 0.5
+} -> [{"hip_id", "ra", "dec", "mag", "pixel_x", "pixel_y"}]
 \end{verbatim}
 
-\subsubsection{Cache Invalidation}
+\subsubsection{5.5 Lost-in-space attitude solver}
 
-The manifest pins the SPICE kernel SHA256 hashes used during pre-bake. If any
-kernel is updated the cache is considered stale and must be rebuilt.
+Given a list of measured star pairs (pixel positions with no prior attitude
+knowledge), determine attitude using one of two classic algorithms:
 
-\subsection{3e — Frontend}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Triangle / pyramid}: compute pairwise inter-star angles,
+        look up against a $K$-vector indexed catalogue, vote for the
+        most-consistent attitude
+  \item \textbf{Davenport q-method / QUEST}: from three or more identified
+        stars, solve the Wahba problem for the best-fit attitude quaternion
+\end{itemize}
 
-\begin{center}
-\begin{tabularx}{\textwidth}{L{3.5cm} X}
-  \toprule
-  \textbf{Feature} & \textbf{Detail} \\
-  \midrule
-  GR vs PN vs Newton &
-    Three overlaid trajectories, colour-coded, rendered simultaneously.
-    Toggle any layer on/off. \\[4pt]
-  Residual panel &
-    Side panel showing $|\mathbf{r}_\text{GR} - \mathbf{r}_\text{Newton}|$
-    vs time; highlights when GR corrections exceed a user-set threshold. \\[4pt]
-  Proper time display &
-    Elapsed proper time $\tau$ alongside coordinate time $t$ in the HUD;
-    shows the integrated gravitational + kinematic time dilation. \\[4pt]
-  Metric visualiser &
-    2D equatorial slice of the Newtonian potential $w(\mathbf{r})$ as a
-    heatmap underlay in the 3D view; toggled via a button. \\
-  \bottomrule
-\end{tabularx}
-\end{center}
+Endpoint \texttt{POST /astro/identify} returns the matched stars and the
+estimated attitude with a covariance.
 
-\subsection{Phase 3 Sequencing}
+\subsubsection{5.6 Optical landmark / planet-limb navigation}
+
+When the spacecraft has prior attitude knowledge but unknown position:
+
+\begin{itemize}[leftmargin=*]
+  \item Render a planet from a known position using its SPICE-derived shape
+        model; extract limb pixels
+  \item Given measured limb pixels, recover line-of-sight to the planet
+        centre, combine with parallax-against-stars and a coarse
+        ephemeris prior, solve for spacecraft position
+  \item This is what \emph{Deep Space~1}, \emph{Stardust}, and JAXA's
+        Hayabusa missions all used (``AutoNav''-style optical navigation)
+\end{itemize}
+
+\subsubsection{5.7 Closed-loop ``navigate by stars'' demo}
+
+Tie the pieces together:
+
+\begin{enumerate}[leftmargin=*]
+  \item Run a Phase~2 propagation as ground truth
+  \item Add Gaussian process noise to the propagator state to simulate
+        unmodelled dynamics
+  \item At each ``measurement epoch'', simulate the star tracker (5.4)
+        and an optical-navigation fix (5.6)
+  \item Run an extended Kalman filter (EKF) that fuses the noisy
+        propagator with the measurements to estimate state + covariance
+  \item Render the truth orbit, the propagator estimate, and the
+        EKF-corrected estimate as three overlaid trajectories with a
+        $3\sigma$ uncertainty tube
+\end{enumerate}
+
+The point: showcase a real autonomous-navigation loop ending in a
+sub-kilometre position covariance even when the propagator has been
+deliberately broken --- the standard cislunar / deep-space navigation
+demonstration.
+
+\subsection{Pillar C --- Frontend integration}
+
+\subsubsection{5.8 Sky toggle + sandbox}
+
+\begin{itemize}[leftmargin=*]
+  \item Header toggle: \emph{Sky} on/off (default on once Phase~5 ships)
+  \item Footer: magnitude-limit slider, constellation toggle, label toggle
+  \item ``Star-tracker view'' camera mode that snaps the camera to the
+        spacecraft's body-frame $+Z$ axis with the configured FOV ---
+        gives the user a literal look-through-the-tracker view, with the
+        simulated noise overlay rendered as little crosshairs on each
+        matched star
+  \item Navigation-demo panel: choose a baseline trajectory, set noise /
+        measurement rate, hit \emph{Run} and watch the 3-trajectory
+        comparison stream in
+\end{itemize}
+
+\subsection{Sequencing}
 
 \begin{center}
 \begin{tabular}{L{5cm} C{2.5cm} L{5.5cm}}
   \toprule
   \textbf{Work item} & \textbf{Est.\ duration} & \textbf{Dependency} \\
   \midrule
-  3a PN corrections        & 2 weeks    & Phase 2 \\
-  3b GR geodesic integrator& 3--4 weeks & 3a \\
-  3c Tetrad thrust model   & 1 week     & 3b \\
-  3d Ray metric cache      & 2--3 weeks & 3b \\
-  3e Frontend              & 2 weeks    & 3b (parallel with 3d) \\
+  5.1 Catalogue ingest      & 2--3 days  & --- \\
+  5.2 WebGPU star renderer  & 4--5 days  & 5.1 \\
+  5.3 Bright movers (SPICE) & 1--2 days  & 5.2 + existing SPICE \\
+  5.4 Star-tracker sim      & 2--3 days  & 5.1 \\
+  5.5 Attitude solver       & 4--5 days  & 5.4 \\
+  5.6 Limb navigation       & 4--5 days  & 5.2, 5.4 \\
+  5.7 Nav demo + EKF        & 4--5 days  & 5.4, 5.6 \\
+  5.8 Frontend integration  & 3--4 days  & all \\
   \midrule
-  \textbf{Total}           & \textbf{10--12 weeks} & \\
+  \textbf{Total}            & \textbf{4--5 weeks} & \\
   \bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{Hard tradeoffs decided up front}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Catalogue choice}: BSC5 (Yale Bright Star, $\sim$9\,K stars)
+        for the rendered field --- big enough to look like the real sky,
+        small enough to ship in the public folder. HIP for the tracker
+        simulation if a user wants tighter FOVs at fainter magnitudes.
+  \item \textbf{Constellation outlines}: render from the standard IAU
+        88-constellation line list (Roger Sinnott's compilation); ship as
+        a hand-curated JSON.
+  \item \textbf{Time-dependence}: stars are treated as fixed at the J2000
+        equator/equinox. Proper motion is in the catalogue but ignored
+        for rendering; star-tracker simulation may apply it for missions
+        spanning years.
+  \item \textbf{No barycentric aberration} for the renderer (negligible at
+        spacecraft velocities). The tracker simulation \emph{will} apply
+        it when needed for sub-arcsecond residuals.
+  \item \textbf{Attitude representation}: quaternions on the wire
+        (always); DCM and Euler angles only inside specific algorithms.
+\end{itemize}
+
+% ============================================================
+%  FUTURE / STRETCH GOALS — GR + other ambitious follow-ups
+% ============================================================
+\newpage
+\section{Future / Stretch Goals}
+
+These are not scheduled. They are deliberately ambitious targets that would
+take OAMP from a Newtonian-with-CR3BP sandbox into territory currently
+inhabited by JPL Monte, GMAT, FreeFlyer, and AGI/STK Premium.
+
+\subsection{Stretch~A --- General Relativity}
+
+The original Phase~5 plan, demoted to a stretch goal in favour of the
+star-field / astro-nav phase. The work-breakdown below is preserved for
+when an interested contributor takes it on.
+
+\subsubsection{A.1 Post-Newtonian corrections (bridge)}
+
+Additive accelerations on top of the existing DOP853 integrator, validated
+against analytic results in the $c \to \infty$ limit and the canonical
+solar-system PN benchmarks.
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Schwarzschild (1PN)}: dominant solar-system GR effect,
+        $\mathbf{a}_\text{Schw} = \tfrac{\mu}{c^2 r^3}\big[(4\tfrac{\mu}{r} - v^2)\mathbf{r} + 4(\mathbf{r}\!\cdot\!\mathbf{v})\mathbf{v}\big]$
+  \item \textbf{Lense--Thirring} frame-dragging from the central body's
+        angular momentum $\mathbf{S} = I_\oplus \boldsymbol{\omega}_\oplus$
+  \item \textbf{de Sitter} geodetic precession from the solar barycentric
+        motion of the Earth--spacecraft system
+  \item \textbf{Tests}: Mercury perihelion 42.98$''$/century to $\pm$0.5\%;
+        Gravity Probe~B geodetic 6606.1\,mas/yr to $\pm$1\%; Shapiro delay
+        for Earth--Moon baseline; PN $\to 0$ as $c \to \infty$
+\end{itemize}
+
+\subsubsection{A.2 Full GR geodesic integrator}
+
+DSX / Brumberg--Kopejkin BCRS metric:
+$ds^2 = -(1 - 2w/c^2)c^2 dt^2 + (1 + 2w/c^2)\delta_{ij} dx^i dx^j + \mathcal{O}(c^{-4})$
+with $w = \sum_A G M_A / r_A$ over solar-system bodies.
+
+\begin{itemize}[leftmargin=*]
+  \item 8D geodesic state $(t_\text{TDB}, x^\mu, u^\mu)$ integrated by
+        DOP853, with $g_{\mu\nu}u^\mu u^\nu + c^2$ logged as a quality
+        invariant
+  \item Christoffel symbols computed analytically from the PN metric
+        expansion --- no numerical differentiation
+  \item Endpoint \texttt{POST /propagate/gr} accepts BCRS initial
+        conditions and a coordinate-time span
+\end{itemize}
+
+\subsubsection{A.3 Tetrad thrust model}
+
+Convert body-frame thrust commands to the local orthonormal tetrad
+$e^\mu{}_{(a)}$ built from $u^\mu$ and the attitude quaternion; inject as
+the right-hand side of the non-geodesic equation $Du^\alpha/d\tau = f^\alpha$.
+
+\subsubsection{A.4 Metric pre-bake cache (Ray)}
+
+Live SPICE-driven $w(\mathbf{r}, t)$ evaluation is $\sim$100$\times$ slower
+than Newtonian propagation. A Ray actor pool samples $w$ and its spatial
+gradients on a Cartesian grid over the mission window, stored as HDF5 in
+\texttt{data/metric\_cache/} with a SHA256 manifest pinning the SPICE
+kernels used at bake time.
+
+\subsubsection{A.5 Frontend}
+
+GR vs PN vs Newton three-way overlay, residual panel showing
+$|\mathbf{r}_\text{GR} - \mathbf{r}_\text{Newton}|(t)$, proper-time $\tau$
+readout alongside coordinate time, optional 2D equatorial slice of the
+Newtonian potential as a heatmap underlay.
+
+\subsection{Stretch~B --- Tesseral gravity}
+
+Beyond the zonal $J_n$, the $C_{nm}, S_{nm}$ tesseral harmonics matter for
+GEO station-keeping (the $75^\circ$E and $105^\circ$W gravitational wells),
+Earth--Moon mascon flybys, and any sub-kilometre precision orbit
+determination on a non-spherical body. EGM2008 / GRGM1200A coefficients
+are public.
+
+\subsection{Stretch~C --- Ground-track \& visibility analysis}
+
+\begin{itemize}[leftmargin=*]
+  \item Project the trajectory onto an equirectangular Earth map; mark
+        ascending / descending nodes
+  \item Ground-station catalogue + line-of-sight pass prediction with
+        elevation / azimuth windows
+  \item Eclipse map: Earth and Moon shadow cones intersected with the
+        trajectory, with umbra / penumbra distinction
+  \item Sun-angle windows for solar-array sizing
+\end{itemize}
+
+\subsection{Stretch~D --- Conjunction analysis}
+
+Against a TLE catalogue (Celestrak active satellites + debris): closest-
+approach distances over a 7-day prediction window, probability of collision
+under a 1$\sigma$ covariance model, sortable risk list. This is the core
+service Combined Space Operations Centre (CSpOC) sells to operators.
+
+\subsection{Stretch~E --- Multi-spacecraft \& constellation propagation}
+
+Propagate $N$ spacecraft jointly, render coverage maps over a target
+region, plot constellation health (gap analysis, mean revisit time).
+Walker / Flower / Star-of-stars constellation generators as preset
+buttons.
+
+% ============================================================
+%  LET YOUR CREATIVITY GO WILD
+% ============================================================
+\newpage
+\section{Let Your Creativity Go Wild}
+
+These are not roadmap items. They are deliberately open-ended ideas where
+the only design constraint is ``it should be cool.'' Pick one, build it,
+open a PR. Add new ideas as they occur to you.
+
+\subsection{Cinematic \& storytelling modes}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Tour mode} --- auto-fly the camera through canonical
+        historical missions (Apollo~11 TLI; Voyager~2 Jupiter encounter;
+        Hayabusa~2 touchdown; JWST L$_2$ insertion; Hiten ballistic
+        capture) with synchronised captions and timeline annotations
+  \item \textbf{Procedural mission cinematography} --- render a 60-second
+        MP4 from any user trajectory with camera moves, captions, and a
+        music bed selected from BPM-matched royalty-free libraries
+  \item \textbf{Mission narrative export} --- pull a 2-paragraph trip
+        summary from the propagator data: ``departed LEO 2026-01-04
+        17:30Z, performed a 3.1\,km/s TLI burn, encountered the lunar
+        SOI 4.2 days later...''
+\end{itemize}
+
+\subsection{Live data \& real-world coupling}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Live-ISS mode} --- pull the current ISS TLE every few
+        hours; render its present position with a sun-illumination
+        indicator and the orbital ground track of the next six passes
+  \item \textbf{AR through your phone} --- point the camera at the night
+        sky; overlay predicted satellite paths and the OAMP-rendered
+        spacecraft on the live video feed
+  \item \textbf{Live debris catalogue} --- render the $\sim$25\,000
+        TLE-tracked objects as a particle cloud; click any one for
+        identification, mass, country of origin
+  \item \textbf{Solar-weather coupling} --- pull NOAA F10.7 and Kp live;
+        show their effect on MSIS drag in a side panel
+\end{itemize}
+
+\subsection{Generative \& AI-augmented}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Natural-language trajectory designer} --- ``get me to
+        Europa for under 5\,km/s'' driving the solver chain via an LLM
+        with tool access to Hohmann, Lambert, multi-burn NLP, and CR3BP
+        manifold endpoints
+  \item \textbf{Mission archetype templates} --- LLM-generated starter
+        scenarios (``cubesat constellation for L-band Earth observation'';
+        ``2030 manned Mars opposition class''); user tunes the result
+  \item \textbf{Anomaly detection} --- an ML model that, given a
+        propagated trajectory and a mission objective, flags maneuvers
+        that are dominant cost drivers and suggests alternatives
+\end{itemize}
+
+\subsection{Wild physics / alternate sandboxes}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Alternate-physics sandbox} --- ``what if $G$ was 2$\times$?'';
+        ``what if the Moon weren't there?''; ``what if Mercury orbited
+        with PN turned off?'' Change the constants, re-propagate, watch
+        the orbit drift
+  \item \textbf{Lyapunov-spectrum visualiser} --- colour each piece of
+        synodic-frame state space by its local Lyapunov exponent;
+        chaotic regions around $L_3$ become visually obvious
+  \item \textbf{N-body chaos sandbox} --- drop $N$ point masses with
+        arbitrary positions / velocities, integrate, render the chaotic
+        evolution and a Poincar\'e section
+  \item \textbf{Light-sail / electric-propulsion} --- low-thrust
+        spiralling with shape-based methods; tightly coupled to a power
+        model that follows SRP shadow and orientation
+  \item \textbf{Interstellar trajectory mode} --- Voyager-style outbound
+        with PN-corrected acceleration tables; render the trajectory
+        through the heliopause
+\end{itemize}
+
+\subsection{New audiences \& interfaces}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{WebXR mode} --- view the scene in a VR headset; reach
+        into the orbit and drag the spacecraft node to retime a maneuver
+  \item \textbf{Audio synthesis} --- drive a synth from orbital
+        frequencies, eccentricity modulation, eclipses-as-amplitude.
+        Kepler's ``music of the spheres'' but literal
+  \item \textbf{Deep-field renderer} --- JWST-style starfield with
+        diffraction spikes, rendered when the camera looks away from any
+        solar-system body. Optionally include nebulae (Hubble HST
+        composites) as static panoramas
+  \item \textbf{Multiplayer mode} --- multiple users edit the same
+        mission plan in real time (CRDT-backed editor state); chat
+        sidebar with annotations pinned to orbit segments
+  \item \textbf{Speedrun mode} --- ``land a payload in low lunar orbit
+        in the minimum number of clicks''; leaderboard of optimised
+        mission plans by total $\Delta v$, by time, by number of burns
+\end{itemize}
+
+\subsection{Asteroid \& deep-space}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Asteroid-mining sandbox} --- pull JPL Horizons NEAs,
+        plan rendezvous, return-trajectory $\Delta v$ budgets, payload
+        mass fractions, accumulated regolith mass returned per dollar
+        of fuel
+  \item \textbf{Defending Earth} --- given an inbound NEA on a hazardous
+        approach, design a kinetic-impactor mission within a 12-month
+        window; visualise the deflection cone of resulting orbits
+  \item \textbf{Hayabusa-replica autonav} --- close the loop end-to-end:
+        propagate truth, simulate the optical-nav fix on the asteroid
+        limb, fuse with the EKF (Phase~5), execute the touch-and-go
+\end{itemize}
+
+\subsection{In-browser optimisation playground}
+
+\begin{itemize}[leftmargin=*]
+  \item Drag a target marker around the 3D scene; watch the multi-burn
+        NLP re-solve in real time with a colour gradient on the
+        trajectory encoding $|\Delta v|$ density
+  \item Pareto-front explorer --- plot $\Delta v$ vs.\ time-of-flight for
+        a swept Lambert / patched-conic transfer; click any point to
+        load the corresponding trajectory
+  \item Sensitivity heatmap --- perturb each design variable by
+        $1\sigma$; render the resulting trajectory bundle as a translucent
+        tube
+\end{itemize}
+
+The point of this section is to keep the imagination ahead of the
+schedule. Every shipped roadmap phase started in a list like this.
 
 % ============================================================
 %  OVERALL TIMELINE
@@ -903,43 +1154,43 @@ kernel is updated the cache is considered stale and must be rebuilt.
     & Newton + $J_2$\,\dots\,$J_6$ + drag + SRP + 3B
     & = P2 (no new physics)
     & CR3BP + BCR4BP
-    & PN1 + full GR (BCRS) \\
+    & = P4 (no new physics) \\
   Frames
     & J2000
     & J2000
     & + body selector (Earth/Moon)
-    & + EM/SE synodic + BCR
-    & BCRS \\
+    & + EM synodic
+    & + body-frame attitude (quaternions) \\
   Integrator
     & DOP853
     & + Verlet + Yoshida-4
     & = P2
-    & + symplectic SABA on CR3BP
-    & + RKN for geodesics \\
+    & = P2 (CR3BP non-dim)
+    & = P4 \\
   Optimisers
     & ---
     & Lambert + Hohmann + CasADi NLP
     & all four exposed in sidebar; + TLE ingest
-    & + manifold-shooting + diff.\ correction
-    & + GR-aware shooting \\
+    & + diff.\ correction (Lyapunov)
+    & + Wahba / QUEST attitude solver; EKF \\
   Frontend
     & 3 demo scenes
     & Maneuver editor + scrubber
     & Solver panel, Moon render, cislunar demo, apse markers, altitude chart, camera targeting
-    & Frame selector, $L_n$ markers, periodic-orbit catalogue, manifold tubes, WSB map
-    & GR/PN/Newton compare, residual panel, metric heatmap \\
+    & Frame selector, $L_n$ markers, Lyapunov + manifold + WSB panels, animated play/pause, past-solid/future-dashed split, coastline overlay
+    & Real celestial sphere, constellations, planet movers, star-tracker view, nav-demo 3-trajectory overlay \\
   Heavy compute
     & ---
     & Ray streaming
     & ---
-    & JAX \texttt{vmap} for batch manifolds (\texttt{gpu} feature)
-    & Ray (metric pre-bake) \\
+    & ---
+    & --- \\
   Status
     & \emph{shipped}
     & \emph{shipped}
-    & \emph{shipped} (3.1--3.6)
-    & planned, $\sim$5--6 weeks
-    & planned, $\sim$10--12 weeks \\
+    & \emph{shipped}
+    & \emph{shipped}
+    & next, $\sim$4--5 weeks \\
 \end{tabularx}
 \end{center}
 
@@ -948,18 +1199,21 @@ kernel is updated the cache is considered stale and must be rebuilt.
 \begin{center}
 \begin{minipage}{0.85\textwidth}
 \begin{verbatim}
-   P1 ──► P2 ──► P3 ──┬──► P4 ──► low-energy + ballistic capture
-                      │
-                      └──► P5 ──► GR / precision science
+   P1 ──► P2 ──► P3 ──► P4 ──► P5 (star field + astro-nav)
+                                   │
+                                   └──► Stretch A: PN + GR
+                                        Stretch B: tesseral gravity
+                                        Stretch C: ground tracks
+                                        Stretch D: conjunction analysis
+                                        Stretch E: constellations
 \end{verbatim}
 \end{minipage}
 \end{center}
 
-Phases 4 and 5 are independent of each other.  Phase 4 specialises the
-dynamics towards three-body geometry (mission design, manifold transfers);
-Phase 5 specialises towards relativistic effects (precision navigation,
-geodesy).  They can be developed in parallel by different contributors once
-the Phase 3 foundations are locked in.
+Phase~5 is the immediate next deliverable.  The Stretch~A--E follow-ups are
+independent of each other and can be picked up by different contributors
+once Phase~5 ships.  GR (Stretch~A) is the most physically ambitious; the
+others are scoped tightly enough to be one-contributor weekend projects.
 
 % ============================================================
 %  CONVENTIONS REFERENCE
@@ -971,13 +1225,14 @@ the Phase 3 foundations are locked in.
   \toprule
   \textbf{Convention} & \textbf{Value} \\
   \midrule
-  Licence        & Apache-2.0 (explicit patent grant) \\
+  Licence        & AGPL-3.0 (network-service source-disclosure obligation; switched from Apache-2.0 during Phase~4 polish) \\
   Time on wire   & UTC ISO-8601 string \\
   Time internal  & TDB seconds since J2000 (= SPICE ET); see \texttt{oamp.timescales} \\
   Units          & SI throughout the engine (m, m/s, kg, s) \\
   Accelerator    & JAX (pixi \texttt{gpu} feature); CPU default \\
   Heavy compute  & Ray (pixi \texttt{full} feature) \\
-  SPICE kernels  & Pinned by SHA256 in \texttt{backend/oamp/spice/manifest.toml} \\
+  SPICE kernels  & Pinned by SHA256 in \texttt{backend/oamp/spice/manifest.toml}; \emph{tracked in-tree} since the data-bundling pass so fresh clones run without network fetches \\
+  Coastline data & Natural Earth 110m, tracked at \texttt{web/public/data/} \\
   Epoch J2000    & 2000-01-01T11:58:55.816Z UTC \\
   $TT - TAI$     & $32.184\,$s (fixed by IAU) \\
   \bottomrule
