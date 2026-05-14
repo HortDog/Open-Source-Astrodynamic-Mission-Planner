@@ -30,5 +30,6 @@ Thumbs.db
 data/cache/
 
 # ingnore AI Agent files
-.claude/
 /.claude
+.claude/
+.claude/settings.local.json
