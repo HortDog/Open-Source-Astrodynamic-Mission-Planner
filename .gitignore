@@ -31,3 +31,4 @@ data/cache/
 
 # ingnore AI Agent files
 .claude/
+/.claude
