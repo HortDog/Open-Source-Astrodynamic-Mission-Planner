@@ -2367,12 +2367,20 @@ function renderSolverForm(): void {
   } else if (type === "tle") {
     form.innerHTML = `
       <label>NORAD ID (fetch from Celestrak)
-        <input id="sv-norad" type="number" placeholder="25544" step="1" /></label>
+        <input id="sv-norad" type="number" placeholder="25544" step="1"
+               title="Catalog number used by NORAD/Celestrak. 25544 = ISS, 20580 = HST, etc." /></label>
       <div style="opacity:.7;margin:3px 0 2px">— or paste TLE —</div>
-      <input id="sv-l1" type="text" placeholder="Line 1" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;font:10px ui-monospace,monospace;padding:2px" />
-      <input id="sv-l2" type="text" placeholder="Line 2" style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;font:10px ui-monospace,monospace;padding:2px;margin-top:2px" />
-      <label>at_utc (optional ISO-8601)
-        <input id="sv-utc" type="text" placeholder="2026-01-01T00:00:00" /></label>`;
+      <input id="sv-l1" type="text" placeholder="Line 1"
+             title="TLE Line 1: catalog number, classification, epoch, mean motion derivatives, B*."
+             style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;font:10px ui-monospace,monospace;padding:2px" />
+      <input id="sv-l2" type="text" placeholder="Line 2"
+             title="TLE Line 2: inclination, RAAN, eccentricity, argument of perigee, mean anomaly, mean motion."
+             style="width:100%;background:#020a02;color:#80ff60;border:1px solid #2a602a;font:10px ui-monospace,monospace;padding:2px;margin-top:2px" />
+      <div style="opacity:.7;margin:4px 0 0;font-size:10px"
+           title="The TLE is propagated to the editor's Epoch (UTC) field. Set that field above to change the propagation time; leave it empty to use the TLE's own epoch.">
+        Propagated to <strong>Epoch (UTC)</strong> set in the editor above
+        <span style="opacity:.6">— empty epoch = use TLE's own epoch.</span>
+      </div>`;
   }
 }
 
@@ -2480,7 +2488,12 @@ async function runSolver(renderer: Renderer): Promise<void> {
         `Σ |Δv| = ${fmt(res.total_dv_m_s)} km/s · ${epochs.length} burns auto-loaded as RIC`;
     } else if (type === "tle") {
       const noradStr = (document.getElementById("sv-norad") as HTMLInputElement).value;
-      const utc = (document.getElementById("sv-utc") as HTMLInputElement).value || undefined;
+      // Unified epoch: pull from the editor's `Epoch (UTC)` field, which is
+      // also the source of t0_tdb for the propagator. Empty value = use the
+      // TLE's own epoch. The datetime-local value is "YYYY-MM-DDTHH:MM[:SS]"
+      // — the backend accepts that as an ISO-8601 UTC string.
+      const epochRaw = (document.getElementById("ic-epoch") as HTMLInputElement).value.trim();
+      const utc = epochRaw || undefined;
       const norad = parseFloat(noradStr);
       const resp = Number.isFinite(norad)
         ? await tleByNorad(norad, utc)
