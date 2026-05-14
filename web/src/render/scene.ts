@@ -10,15 +10,28 @@ type LatLon = readonly [number, number];
 export type Renderer = {
   readonly kind: "webgpu" | "webgl2-fallback" | "none";
   setSceneScale(metersPerUnit: number): void;
-  /** Set the central-body radius. Passing `body: "EARTH"` overlays the
-   *  equator/meridian graticule plus any coastline data that's been loaded
-   *  via `setEarthCoastline`. Any other value clears that overlay. */
-  setCentralBody(radiusMeters: number, body?: "EARTH" | "MOON"): void;
+  /** Set the central-body equatorial radius and (optionally) polar radius
+   *  for an oblate spheroid. When `polarRadiusMeters` is omitted or equal
+   *  to `radiusMeters` the body renders as a true sphere (back-compat).
+   *  Passing `body: "EARTH"` overlays the equator/meridian graticule plus
+   *  any coastline data that's been loaded via `setEarthCoastline`. Any
+   *  other value clears that overlay. */
+  setCentralBody(
+    radiusMeters: number,
+    body?: "EARTH" | "MOON",
+    polarRadiusMeters?: number,
+  ): void;
   /** Provide real-world coastline polylines (lat/lon pairs in degrees) for
    *  the Earth overlay. The buffer is rebuilt immediately if the central body
    *  is already Earth; otherwise the data is cached for the next Earth view.
    *  Pass `null` to clear back to graticule-only. */
   setEarthCoastline(polylines: ReadonlyArray<ReadonlyArray<readonly [number, number]>> | null): void;
+  /** Rotate the central-body wireframe + coastline about the body's pole
+   *  (+Z axis) by `theta` radians. In an inertial view this is GMST; in a
+   *  body-fixed or synodic view it should be 0. The buffers are rebuilt
+   *  lazily — repeated calls within ~0.5° of the previous value are ignored
+   *  to keep the upload churn off the hot path. */
+  setCentralBodyOrientation(theta: number): void;
   drawTrajectory(
     positions: Float32Array<ArrayBuffer>,
     colors?: Float32Array<ArrayBuffer>,
@@ -147,10 +160,11 @@ fn fs_dot(
 function nullRenderer(kind: "none" | "webgl2-fallback" = "none"): Renderer {
   return {
     kind,
-    setSceneScale:     () => {},
-    setCentralBody:    () => {},
-    setEarthCoastline: () => {},
-    drawTrajectory:    () => {},
+    setSceneScale:             () => {},
+    setCentralBody:            () => {},
+    setEarthCoastline:         () => {},
+    setCentralBodyOrientation: () => {},
+    drawTrajectory:            () => {},
     setMarker:        () => {},
     setSecondaryBody: () => {},
     setCameraTarget:  () => {},
@@ -233,17 +247,21 @@ function listToQuads(data: Float32Array<ArrayBuffer>): Float32Array<ArrayBuffer>
 
 // Wireframe sphere: parallels + meridians as a line-list (interleaved pos+color).
 function buildSphere(
-  r: number,
+  r_eq: number,
+  r_pol = r_eq,
   parallels = 18,
   meridians = 36,
   ringSegs = 72*2,
   meridianSegs = 36*2,
 ): Float32Array<ArrayBuffer> {
+  // Oblate spheroid: equator at radius r_eq, poles at ±r_pol. Earth has
+  // a ~0.3% flattening that is visible at the right zoom; for bodies
+  // where r_pol == r_eq this reduces to the previous sphere geometry.
   const verts: number[] = [];
   for (let p = 1; p < parallels; p++) {
     const phi = -Math.PI / 2 + (p / parallels) * Math.PI;
     const c   = Math.abs(phi) < 1e-9 ? BODY_EQ_CLR : BODY_COLOR;
-    const cz  = r * Math.sin(phi), cr = r * Math.cos(phi);
+    const cz  = r_pol * Math.sin(phi), cr = r_eq * Math.cos(phi);
     for (let i = 0; i < ringSegs; i++) {
       const t1 = (i / ringSegs) * 2 * Math.PI;
       const t2 = ((i + 1) / ringSegs) * 2 * Math.PI;
@@ -258,8 +276,8 @@ function buildSphere(
     for (let i = 0; i < meridianSegs; i++) {
       const p1 = -Math.PI / 2 + (i / meridianSegs) * Math.PI;
       const p2 = -Math.PI / 2 + ((i + 1) / meridianSegs) * Math.PI;
-      const r1 = r * Math.cos(p1), z1 = r * Math.sin(p1);
-      const r2 = r * Math.cos(p2), z2 = r * Math.sin(p2);
+      const r1 = r_eq * Math.cos(p1), z1 = r_pol * Math.sin(p1);
+      const r2 = r_eq * Math.cos(p2), z2 = r_pol * Math.sin(p2);
       verts.push(r1 * ct, r1 * st, z1, c[0], c[1], c[2]);
       verts.push(r2 * ct, r2 * st, z2, c[0], c[1], c[2]);
     }
@@ -284,7 +302,7 @@ function buildAxes(len: number): Float32Array<ArrayBuffer> {
 }
 
 // XYZ-only triangle mesh for the depth pre-pass (solid sphere).
-function buildSolidSphere(radius: number, rings = 32, segs = 32): Float32Array<ArrayBuffer> {
+function buildSolidSphere(r_eq: number, r_pol = r_eq, rings = 32, segs = 32): Float32Array<ArrayBuffer> {
   const verts: number[] = [];
   for (let ri = 0; ri < rings; ri++) {
     const phi1 = -Math.PI / 2 + (ri / rings) * Math.PI;
@@ -293,9 +311,9 @@ function buildSolidSphere(radius: number, rings = 32, segs = 32): Float32Array<A
       const th1 = (si / segs) * 2 * Math.PI;
       const th2 = ((si + 1) / segs) * 2 * Math.PI;
       const p = (phi: number, th: number): [number, number, number] => [
-        radius * Math.cos(phi) * Math.cos(th),
-        radius * Math.cos(phi) * Math.sin(th),
-        radius * Math.sin(phi),
+        r_eq * Math.cos(phi) * Math.cos(th),
+        r_eq * Math.cos(phi) * Math.sin(th),
+        r_pol * Math.sin(phi),
       ];
       const [p00, p10, p01, p11] = [p(phi1, th1), p(phi1, th2), p(phi2, th1), p(phi2, th2)];
       verts.push(...p00, ...p01, ...p10);
@@ -640,27 +658,33 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
   const COAST_COLOR: [number, number, number]     = [0.10, 0.85, 0.45];
   const GRATICULE_COLOR: [number, number, number] = [0.40, 1.00, 0.60];
   let coastPolys: ReadonlyArray<ReadonlyArray<LatLon>> = [];
-  let lastBodyRadius = 0;
+  let lastBodyRadius = 0;       // equatorial
+  let lastBodyPolarRadius = 0;  // along the spin axis; equals lastBodyRadius for sphere
   let lastBodyName: "EARTH" | "MOON" | undefined = undefined;
 
-  function buildCoastlineList(radius: number): Float32Array<ArrayBuffer> {
-    const r = radius * 1.002;
+  function buildCoastlineList(r_eq: number, r_pol: number): Float32Array<ArrayBuffer> {
+    // Place each (lat, lon) point on the oblate spheroid surface at 1.002 r
+    // to stay just outside the wireframe and avoid z-fighting. The equator
+    // scales by r_eq, the pole by r_pol. For a sphere (r_eq == r_pol) this
+    // is the prior behaviour exactly.
+    const a = r_eq * 1.002;
+    const c_pol = r_pol * 1.002;
     const segs: number[] = [];
-    const emit = (polys: ReadonlyArray<ReadonlyArray<LatLon>>, c: [number, number, number]): void => {
+    const emit = (polys: ReadonlyArray<ReadonlyArray<LatLon>>, col: [number, number, number]): void => {
       for (const poly of polys) {
         for (let i = 0; i < poly.length - 1; i++) {
           const [latA, lonA] = poly[i]!;
           const [latB, lonB] = poly[i + 1]!;
           const phiA = (latA * Math.PI) / 180, lamA = (lonA * Math.PI) / 180;
           const phiB = (latB * Math.PI) / 180, lamB = (lonB * Math.PI) / 180;
-          const ax = r * Math.cos(phiA) * Math.cos(lamA);
-          const ay = r * Math.cos(phiA) * Math.sin(lamA);
-          const az = r * Math.sin(phiA);
-          const bx = r * Math.cos(phiB) * Math.cos(lamB);
-          const by = r * Math.cos(phiB) * Math.sin(lamB);
-          const bz = r * Math.sin(phiB);
-          segs.push(ax, ay, az, c[0], c[1], c[2],
-                    bx, by, bz, c[0], c[1], c[2]);
+          const ax = a * Math.cos(phiA) * Math.cos(lamA);
+          const ay = a * Math.cos(phiA) * Math.sin(lamA);
+          const az = c_pol * Math.sin(phiA);
+          const bx = a * Math.cos(phiB) * Math.cos(lamB);
+          const by = a * Math.cos(phiB) * Math.sin(lamB);
+          const bz = c_pol * Math.sin(phiB);
+          segs.push(ax, ay, az, col[0], col[1], col[2],
+                    bx, by, bz, col[0], col[1], col[2]);
         }
       }
     };
@@ -669,23 +693,66 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     return new Float32Array(segs);
   }
 
+  // Z-axis rotation in radians applied to the body wireframe + coastline.
+  // For an inertial (J2000) view this tracks GMST; for body-fixed or
+  // synodic views it stays 0.
+  let lastBodyOrientation = 0;
+  const ORIENTATION_REBUILD_EPSILON = 0.0087;  // ~0.5°
+
+  /** Rotate every (x, y) pair in an interleaved pos+color stride-6 buffer
+   *  about the +Z axis by `theta`. z and color channels are untouched. */
+  function rotateZInPlace(data: Float32Array<ArrayBuffer>, theta: number): Float32Array<ArrayBuffer> {
+    if (theta === 0) return data;
+    const c = Math.cos(theta), s = Math.sin(theta);
+    for (let i = 0; i + 5 < data.length; i += 6) {
+      const x = data[i]!, y = data[i + 1]!;
+      data[i]     = x * c - y * s;
+      data[i + 1] = x * s + y * c;
+    }
+    return data;
+  }
+
+  function rebuildBodyWireframe(): void {
+    if (lastBodyRadius <= 0) return;
+    const wire = rotateZInPlace(
+      buildSphere(lastBodyRadius, lastBodyPolarRadius),
+      lastBodyOrientation,
+    );
+    const wireQuads = listToQuads(wire);
+    [bodyBuf, bodyCount] = uploadThick(bodyBuf, wireQuads);
+  }
+
   function rebuildEarthOverlay(): void {
     if (lastBodyName === "EARTH" && lastBodyRadius > 0) {
-      const coastQuads = listToQuads(buildCoastlineList(lastBodyRadius));
+      const coast = rotateZInPlace(
+        buildCoastlineList(lastBodyRadius, lastBodyPolarRadius),
+        lastBodyOrientation,
+      );
+      const coastQuads = listToQuads(coast);
       [coastBuf, coastCount] = uploadThick(coastBuf, coastQuads);
     } else {
       [coastBuf, coastCount] = uploadThick(coastBuf, new Float32Array(0));
     }
   }
 
-  function setCentralBody(radiusMeters: number, body?: "EARTH" | "MOON"): void {
+  function setCentralBody(
+    radiusMeters: number,
+    body?: "EARTH" | "MOON",
+    polarRadiusMeters?: number,
+  ): void {
     lastBodyRadius = radiusMeters;
+    lastBodyPolarRadius = polarRadiusMeters ?? radiusMeters;
     lastBodyName = body;
 
-    const wireQuads = listToQuads(buildSphere(radiusMeters));
-    [bodyBuf, bodyCount] = uploadThick(bodyBuf, wireQuads);
+    rebuildBodyWireframe();
 
-    const solidData = buildSolidSphere(radiusMeters * 0.995); // slightly smaller to avoid z-fighting with wireframe
+    // Solid spheroid is rotationally symmetric about Z, no need to rebuild
+    // on orientation change. Shrink both axes by 0.995 to stay inside the
+    // wireframe and avoid z-fighting.
+    const solidData = buildSolidSphere(
+      lastBodyRadius * 0.995,
+      lastBodyPolarRadius * 0.995,
+    );
     [solidBodyBuf, solidBodyCount] = uploadRaw(solidBodyBuf, solidData, 3);
 
     rebuildEarthOverlay();
@@ -695,6 +762,15 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
     polys: ReadonlyArray<ReadonlyArray<LatLon>> | null,
   ): void {
     coastPolys = polys ?? [];
+    rebuildEarthOverlay();
+  }
+
+  function setCentralBodyOrientation(theta: number): void {
+    const delta = Math.abs(theta - lastBodyOrientation);
+    // Skip negligible rotations to avoid churning the GPU upload queue.
+    if (delta < ORIENTATION_REBUILD_EPSILON && delta < 2 * Math.PI - ORIENTATION_REBUILD_EPSILON) return;
+    lastBodyOrientation = theta;
+    rebuildBodyWireframe();
     rebuildEarthOverlay();
   }
 
@@ -973,8 +1049,8 @@ export async function initRenderer(canvas: HTMLCanvasElement): Promise<Renderer>
 
   return {
     kind: "webgpu",
-    setSceneScale, setCentralBody, setEarthCoastline, drawTrajectory, setMarker,
-    setSecondaryBody, setCameraTarget, setApses, setLagrangePoints,
-    setManifoldTubes, resize,
+    setSceneScale, setCentralBody, setEarthCoastline, setCentralBodyOrientation,
+    drawTrajectory, setMarker, setSecondaryBody, setCameraTarget, setApses,
+    setLagrangePoints, setManifoldTubes, resize,
   };
 }

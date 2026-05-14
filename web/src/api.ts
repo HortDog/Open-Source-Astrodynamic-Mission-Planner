@@ -299,9 +299,14 @@ export async function cr3bpLagrange(
   return r.json();
 }
 
+export type TransformDirection =
+  | "to_synodic" | "from_synodic"
+  | "to_ecef"    | "from_ecef";
+export type TransformFrame = "EM_SYNODIC" | "ECEF";
+
 export type TransformStatesResponse = {
-  frame: string;
-  direction: "to_synodic" | "from_synodic";
+  frame: TransformFrame;
+  direction: TransformDirection;
   t_tdb: number;
   states: number[][];
   length_scale_m: number;
@@ -309,16 +314,21 @@ export type TransformStatesResponse = {
 };
 
 export async function transformStates(req: {
-  direction: "to_synodic" | "from_synodic";
-  frame?: "EM_SYNODIC";
+  direction: TransformDirection;
+  frame?: TransformFrame;
   t_tdb: number;
   t_offsets_s?: number[];
   states: number[][];
 }): Promise<TransformStatesResponse> {
+  // Default frame inferred from the direction when caller omits it. The
+  // server requires both, so we pre-fill `frame` if the caller used a
+  // direction that uniquely identifies one (e.g. `to_ecef` → `ECEF`).
+  const frame: TransformFrame = req.frame
+    ?? (req.direction === "to_ecef" || req.direction === "from_ecef" ? "ECEF" : "EM_SYNODIC");
   const r = await fetch("/api/transform/states", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ frame: "EM_SYNODIC", ...req }),
+    body: JSON.stringify({ ...req, frame }),
   });
   if (!r.ok) throw new Error(`transform ${r.status}: ${await r.text()}`);
   return r.json();

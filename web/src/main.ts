@@ -25,8 +25,17 @@ import {
   type PropagateResponse,
   type Vec3,
 } from "./api";
-import { DEG, elementsToState, RAD, stateToElements, type OrbitalElements } from "./kepler";
+import {
+  DEG,
+  ecefToJ2000,
+  elementsToState,
+  j2000ToEcef,
+  RAD,
+  stateToElements,
+  type OrbitalElements,
+} from "./kepler";
 import { fetchEarthCoastline } from "./render/earth-coastline";
+import { gmstFromTdb } from "./render/gmst";
 import { initRenderer, type Renderer } from "./render/scene";
 
 const status = document.getElementById("status")!;
@@ -93,12 +102,31 @@ const R_EARTH = 6_378_137;
 const R0 = 7_000_000;
 const INCLINATION_DEG = 51.6;
 
-// Body constants table for the central-body selector (frontend mirror of the
-// canonical values in oamp.bodies — used only to seed the editor IC defaults).
+// Body constants table for the central-body selector. Mirrors the canonical
+// values in `backend/oamp/bodies.py` — used to seed the editor IC defaults
+// and to render the body as an oblate spheroid where appropriate.
 type BodyName = "EARTH" | "MOON";
-const BODY: Record<BodyName, { mu: number; radius: number; default_alt_m: number; label: string }> = {
-  EARTH: { mu: 3.986004418e14, radius: 6_378_137,  default_alt_m: 622_000,  label: "Earth" },
-  MOON:  { mu: 4.9048695e12,   radius: 1_737_400,  default_alt_m: 100_000,  label: "Moon"  },
+const BODY: Record<BodyName, {
+  mu: number;
+  radius: number;        // equatorial
+  polar_radius: number;  // along the spin axis
+  default_alt_m: number;
+  label: string;
+}> = {
+  EARTH: {
+    mu: 3.986004418e14,
+    radius: 6_378_137,
+    polar_radius: 6_356_752.314,  // WGS-84, 1/f = 298.257_223_563
+    default_alt_m: 622_000,
+    label: "Earth",
+  },
+  MOON: {
+    mu: 4.9048695e12,
+    radius: 1_737_400,
+    polar_radius: 1_736_000,      // IAU 2009 — 1/f ≈ 1240.6
+    default_alt_m: 100_000,
+    label: "Moon",
+  },
 };
 
 // Earth--Moon system constants used by the EM_SYNODIC view-frame transform.
@@ -340,6 +368,38 @@ function stopPlayback(): void {
   setBtnPlayLabel();
 }
 
+/** Finalise a demo: pick a playback speed appropriate for the mission
+ *  duration, optionally open the editor sidebar, and auto-start playback so
+ *  the user immediately sees an animated mission with the past-as-solid /
+ *  future-as-dashed split, rotating Earth, and SPICE-driven Moon. */
+function finalizeDemo(opts: {
+  /** Sim seconds per real second. If omitted, picked to make the full
+   *  mission play through in ~8 real seconds. */
+  speed?: number;
+  /** Whether to open the maneuver-editor sidebar. Default true so the user
+   *  can immediately tweak the demo's IC. */
+  openEditor?: boolean;
+}): void {
+  if (opts.openEditor !== false) {
+    editor.classList.add("show");
+    btnEditor.setAttribute("aria-pressed", "true");
+  }
+  if (activeTraj && activeTraj.t.length >= 2) {
+    const t0 = activeTraj.t[0]!;
+    const tN = activeTraj.t[activeTraj.t.length - 1]!;
+    const duration = Math.max(tN - t0, 1);
+    const speed = opts.speed ?? Math.max(1, duration / 8);  // ~8 s playback
+    // Snap to the nearest preset in the dropdown so the displayed value
+    // matches what's actually playing.
+    const presets = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000];
+    const closest = presets.reduce((a, b) =>
+      Math.abs(Math.log(b) - Math.log(speed)) < Math.abs(Math.log(a) - Math.log(speed)) ? b : a);
+    playSpeedSel.value = String(closest);
+  }
+  // Defer one frame so the renderer has uploaded the trajectory buffer.
+  requestAnimationFrame(() => startPlayback());
+}
+
 function tickPlayback(now: number): void {
   if (!playing || !activeTraj) { stopPlayback(); return; }
   const speed = parseFloat(playSpeedSel.value || "1000");
@@ -395,6 +455,8 @@ function updateScrubMarker(idx: number): void {
   updateAltitudeCursor(idx);
   // Repaint the trajectory with the past/future split at this scrub idx.
   if (cachedPositions) drawTrajectorySplit(idx);
+  // Spin Earth's wireframe + coastline to match the current mission time.
+  updateEarthRotationAt(t);
 }
 
 scrub.addEventListener("input", () => updateScrubMarker(parseInt(scrub.value, 10)));
@@ -465,9 +527,10 @@ function colorByPhases(
 }
 
 async function showLeo(renderer: Renderer, j2 = false): Promise<void> {
+  rotateEarth = true; activeEpochTdb = 0;
   if (renderer.kind !== "webgpu") return;
   renderer.setSceneScale(R0);
-  renderer.setCentralBody(R_EARTH, "EARTH");
+  renderer.setCentralBody(R_EARTH, "EARTH", BODY.EARTH.polar_radius);
   const v0 = Math.sqrt(MU_EARTH / R0);
   const i = (INCLINATION_DEG * Math.PI) / 180;
   const period = 2 * Math.PI * Math.sqrt((R0 * R0 * R0) / MU_EARTH);
@@ -488,12 +551,14 @@ async function showLeo(renderer: Renderer, j2 = false): Promise<void> {
   setStatus(j2
     ? `LEO + J2: ${data.states.length} samples over ${(duration / 60).toFixed(0)} min — note nodal regression`
     : `LEO: ${data.states.length} samples over one period (${period.toFixed(0)} s)`);
+  finalizeDemo({});
 }
 
 async function showLaunch(renderer: Renderer): Promise<void> {
+  rotateEarth = true; activeEpochTdb = 0;
   if (renderer.kind !== "webgpu") return;
   renderer.setSceneScale(R_EARTH);
-  renderer.setCentralBody(R_EARTH, "EARTH");
+  renderer.setCentralBody(R_EARTH, "EARTH", BODY.EARTH.polar_radius);
 
   setStatus("running launch sim…");
   const data = await runLaunch();
@@ -516,18 +581,20 @@ async function showLaunch(renderer: Renderer): Promise<void> {
     `Δv_circ=${data.circularization_dv_m_s.toFixed(0)} m/s, ` +
     `final orbit ${data.final_periapsis_km.toFixed(0)} × ${data.final_apoapsis_km.toFixed(0)} km`,
   );
+  finalizeDemo({});
 }
 
 /** Hohmann LEO→GEO. Three phases displayed:
  *  green (1 LEO orbit) → amber (half transfer ellipse) → cyan (1 GEO orbit). */
 async function showHohmann(renderer: Renderer): Promise<void> {
+  rotateEarth = true; activeEpochTdb = 0;
   if (renderer.kind !== "webgpu") return;
 
   const r_leo = R_EARTH + 400e3;       // 400 km LEO
   const r_geo = 42_164e3;              // GEO
 
   renderer.setSceneScale(r_geo);
-  renderer.setCentralBody(R_EARTH, "EARTH");
+  renderer.setCentralBody(R_EARTH, "EARTH", BODY.EARTH.polar_radius);
 
   setStatus("solving Hohmann transfer…");
   const ho = await optimizeHohmann({ r1_m: r_leo, r2_m: r_geo, mu: MU_EARTH });
@@ -569,11 +636,13 @@ async function showHohmann(renderer: Renderer): Promise<void> {
     `Δv_total=${(ho.dv_total_m_s / 1000).toFixed(2)} km/s · ` +
     `TOF=${(ho.transfer_time_s / 3600).toFixed(2)} h`,
   );
+  finalizeDemo({});
 }
 
 /** Lambert intercept: depart from a 500 km circular orbit, arrive at a target
  *  point on a 4 000 km circular orbit 120° downrange after a chosen TOF. */
 async function showLambert(renderer: Renderer): Promise<void> {
+  rotateEarth = true; activeEpochTdb = 0;
   if (renderer.kind !== "webgpu") return;
 
   const r_dep = R_EARTH + 500e3;
@@ -582,7 +651,7 @@ async function showLambert(renderer: Renderer): Promise<void> {
   const tof_s = 4 * 60 * 60;          // 4 h
 
   renderer.setSceneScale(r_arr * 1.2);
-  renderer.setCentralBody(R_EARTH, "EARTH");
+  renderer.setCentralBody(R_EARTH, "EARTH", BODY.EARTH.polar_radius);
 
   setStatus("solving Lambert problem…");
 
@@ -674,6 +743,7 @@ async function showLambert(renderer: Renderer): Promise<void> {
     `Δv_total=${((dv1_mag + dv2_mag) / 1000).toFixed(2)} km/s · ` +
     `solver: ${lb.converged ? "converged" : "diverged"}`,
   );
+  finalizeDemo({});
 }
 
 /** Cislunar demo: Earth-Moon Lambert transfer.
@@ -684,6 +754,7 @@ async function showLambert(renderer: Renderer): Promise<void> {
  *  J2 + third-body Moon active, and renders the Moon at its inertial position.
  *  Requires SPICE kernels — bail with a hint if `/spice/state` is unavailable. */
 async function showCislunar(renderer: Renderer): Promise<void> {
+  rotateEarth = true; activeEpochTdb = 0;
   if (renderer.kind !== "webgpu") return;
   setStatus("setting up cislunar TLI demo…");
 
@@ -749,6 +820,7 @@ async function showCislunar(renderer: Renderer): Promise<void> {
     `TOF=${(tof_s / 86400).toFixed(1)} d · Moon @ ${moonRangeKm.toFixed(0)} km · ` +
     `J2 + 3rd-body Moon active`,
   );
+  finalizeDemo({});
 }
 
 /** CR3BP Earth–Moon Lagrange demo (Phase 4).
@@ -762,6 +834,7 @@ async function showCislunar(renderer: Renderer): Promise<void> {
 async function showCr3bp(renderer: Renderer): Promise<void> {
   if (renderer.kind !== "webgpu") return;
   setStatus("solving CR3BP Earth–Moon Lagrange points…");
+  rotateEarth = false;
 
   // Length scale = EM mean distance (m), matching backend EM_LENGTH_M.
   const L_M = 384_400_000;
@@ -778,7 +851,7 @@ async function showCr3bp(renderer: Renderer): Promise<void> {
   renderer.setSceneScale(1.4 * L_M);
   // No central body — synodic frame has the barycenter at origin and two
   // primaries at known offsets; render Earth + Moon as central / secondary.
-  renderer.setCentralBody(6_378_137, "EARTH");           // Earth at (−μ, 0)
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH", BODY.EARTH.polar_radius);  // Earth at (−μ, 0)
   // The renderer puts the central body at (0,0,0); to keep the synodic
   // convention pretty we draw both primaries explicitly.  Earth wireframe at
   // the origin is "close enough" to (−μ, 0) at our zoom; render Moon at
@@ -844,6 +917,7 @@ async function showCr3bp(renderer: Renderer): Promise<void> {
     `L1=${L.L1[0].toFixed(4)}, L2=${L.L2[0].toFixed(4)}, L3=${L.L3[0].toFixed(4)} · ` +
     `Jacobi drift=${drift.toExponential(2)} over ${N} samples`,
   );
+  finalizeDemo({});
 }
 
 /** Phase 4.7 — L1 Lyapunov orbit + its unstable manifold (Earth-side branch).
@@ -858,6 +932,7 @@ async function showCr3bp(renderer: Renderer): Promise<void> {
 async function showLyapunovManifold(renderer: Renderer): Promise<void> {
   if (renderer.kind !== "webgpu") return;
   setStatus("computing L1 planar Lyapunov orbit…");
+  rotateEarth = false;
 
   const L_M = EM_LENGTH_M;
 
@@ -899,7 +974,7 @@ async function showLyapunovManifold(renderer: Renderer): Promise<void> {
 
   // Scene scale spans the L1 → Moon corridor with a margin.
   renderer.setSceneScale(1.4 * L_M);
-  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH", BODY.EARTH.polar_radius);
 
   // Earth-centric synodic view: barycentric x + μ·d_em shift.
   const xShift = EM_MU_FRONTEND * L_M;
@@ -958,6 +1033,7 @@ async function showLyapunovManifold(renderer: Renderer): Promise<void> {
     `Ax=0.02 nd · T=${orbit.period.toFixed(3)} · C=${orbit.jacobi.toFixed(4)} · ` +
     `${tubes.length}/${manResp.trajectories.length} tubes rendered · DC ${orbit.dc_iterations} iter`,
   );
+  finalizeDemo({});
 }
 
 
@@ -971,6 +1047,7 @@ async function showLyapunovManifold(renderer: Renderer): Promise<void> {
 async function showWsb(renderer: Renderer): Promise<void> {
   if (renderer.kind !== "webgpu") return;
   setStatus("computing WSB capture/escape grid…");
+  rotateEarth = false;
 
   // Coarse grid: 6 altitudes × 12 angles = 72 propagations.  Tight enough
   // to see the WSB filament without overloading the backend.
@@ -990,7 +1067,7 @@ async function showWsb(renderer: Renderer): Promise<void> {
   const L_M = EM_LENGTH_M;
   const xShift = EM_MU_FRONTEND * L_M;
   renderer.setSceneScale(1.4 * L_M);
-  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH", BODY.EARTH.polar_radius);
   renderer.setSecondaryBody([L_M, 0, 0], BODY.MOON.radius);
   latestMoonR = [L_M, 0, 0];
   moonTrackT = null; moonTrackR = null;
@@ -1065,6 +1142,9 @@ async function showWsb(renderer: Renderer): Promise<void> {
     `${escaped.length}/${totalCells} escaped · ` +
     `${totalCells - captured.length - escaped.length} failed/uncertain`,
   );
+  // WSB is a static diagnostic — no time evolution to play through, just open
+  // the editor so users can see / tweak the panel inputs.
+  finalizeDemo({ speed: 1 });
 }
 
 
@@ -1087,7 +1167,7 @@ type ManeuverRow = {
 
 type ViewFrame = "J2000" | "EM_SYNODIC";
 type PropMode = "J2000" | "CR3BP";
-type IcForm = "cartesian" | "elements" | "cr3bp";
+type IcForm = "cartesian" | "elements" | "ecef" | "cr3bp";
 type Integrator = "dop853" | "verlet" | "yoshida4";
 
 type EditorState = {
@@ -1217,6 +1297,29 @@ function loadElementsPreset(
 let latestTrajectory: { t: number[]; states: number[][] } | null = null;
 let streamAbort: AbortController | null = null;
 
+// --------------------------------------------------------------------------- //
+//  Earth-rotation state. When the rendered scene is in an inertial frame the
+//  central-body wireframe should rotate at GMST; in a synodic / body-fixed
+//  view the frame absorbs the spin and the wireframe stays put.
+// --------------------------------------------------------------------------- //
+
+// Mission epoch in TDB seconds since J2000 — set by applyEditor / demos when
+// they kick off a propagation. The scrub-driven Earth rotation reads this plus
+// the scrub-tick relative time to compute the current Greenwich angle.
+let activeEpochTdb = 0;
+// True when the current rendering is in an inertial frame and the body should
+// visibly rotate. False for EM-synodic, CR3BP, or any rotating-frame view.
+let rotateEarth = true;
+
+function updateEarthRotationAt(t_offset_s: number): void {
+  if (!activeRenderer) return;
+  if (!rotateEarth) {
+    activeRenderer.setCentralBodyOrientation(0);
+    return;
+  }
+  activeRenderer.setCentralBodyOrientation(gmstFromTdb(activeEpochTdb + t_offset_s));
+}
+
 function fillPerturbations(): void {
   const set = (id: string, v: string | boolean) => {
     const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement;
@@ -1286,8 +1389,10 @@ function fillIc(): void {
   (document.getElementById("cr-vz") as HTMLInputElement).value = String(editorState.cr_vz);
   (document.getElementById("cr-tfin") as HTMLInputElement).value = String(editorState.cr_tfin);
   (document.getElementById("cr-mu") as HTMLInputElement).value = String(editorState.cr_mu);
-  // Populate the elements panel from the current Cartesian state.
+  // Populate the elements + ECEF panels from the current Cartesian state so
+  // every lens is in sync at all times.
   fillElementsFromState();
+  fillEcefFromState();
   updateIcFormVisibility();
 }
 
@@ -1334,10 +1439,46 @@ function readElementsToState(): void {
   (document.getElementById("ic-vz") as HTMLInputElement).value = String(v[2]);
 }
 
+function fillEcefFromState(): void {
+  const gmst = gmstFromTdb(editorState.t0_tdb);
+  const { r, v } = j2000ToEcef(
+    [editorState.rx, editorState.ry, editorState.rz],
+    [editorState.vx, editorState.vy, editorState.vz],
+    gmst,
+  );
+  (document.getElementById("ic-erx") as HTMLInputElement).value = r[0].toFixed(3);
+  (document.getElementById("ic-ery") as HTMLInputElement).value = r[1].toFixed(3);
+  (document.getElementById("ic-erz") as HTMLInputElement).value = r[2].toFixed(3);
+  (document.getElementById("ic-evx") as HTMLInputElement).value = v[0].toFixed(6);
+  (document.getElementById("ic-evy") as HTMLInputElement).value = v[1].toFixed(6);
+  (document.getElementById("ic-evz") as HTMLInputElement).value = v[2].toFixed(6);
+}
+
+function readEcefToState(): void {
+  const n = (id: string) => parseFloat((document.getElementById(id) as HTMLInputElement).value);
+  const gmst = gmstFromTdb(editorState.t0_tdb);
+  const { r, v } = ecefToJ2000(
+    [n("ic-erx"), n("ic-ery"), n("ic-erz")],
+    [n("ic-evx"), n("ic-evy"), n("ic-evz")],
+    gmst,
+  );
+  if (![...r, ...v].every(Number.isFinite)) return;
+  editorState.rx = r[0]; editorState.ry = r[1]; editorState.rz = r[2];
+  editorState.vx = v[0]; editorState.vy = v[1]; editorState.vz = v[2];
+  // Mirror into the Cartesian inputs so the user can flip to that view.
+  (document.getElementById("ic-rx") as HTMLInputElement).value = String(r[0]);
+  (document.getElementById("ic-ry") as HTMLInputElement).value = String(r[1]);
+  (document.getElementById("ic-rz") as HTMLInputElement).value = String(r[2]);
+  (document.getElementById("ic-vx") as HTMLInputElement).value = String(v[0]);
+  (document.getElementById("ic-vy") as HTMLInputElement).value = String(v[1]);
+  (document.getElementById("ic-vz") as HTMLInputElement).value = String(v[2]);
+}
+
 function updateIcFormVisibility(): void {
   const form = editorState.ic_form;
   (document.getElementById("ic-cartesian") as HTMLElement).style.display = form === "cartesian" ? "block" : "none";
   (document.getElementById("ic-elements")  as HTMLElement).style.display = form === "elements"  ? "block" : "none";
+  (document.getElementById("ic-ecef")      as HTMLElement).style.display = form === "ecef"      ? "block" : "none";
   (document.getElementById("ic-cr3bp")     as HTMLElement).style.display = form === "cr3bp"     ? "block" : "none";
 }
 
@@ -1348,15 +1489,19 @@ function readIc(): void {
   editorState.mode = (document.getElementById("ic-mode") as HTMLSelectElement).value as PropMode;
   editorState.ic_form = (document.getElementById("ic-form") as HTMLSelectElement).value as IcForm;
 
+  // Read the epoch first — ECEF conversion depends on it.
+  editorState.t0_tdb = utcToTdbSeconds((document.getElementById("ic-epoch") as HTMLInputElement).value);
+
   if (editorState.ic_form === "elements") {
     readElementsToState();
+  } else if (editorState.ic_form === "ecef") {
+    readEcefToState();
   } else if (editorState.ic_form === "cr3bp") {
     editorState.cr_x = n("cr-x"); editorState.cr_y = n("cr-y"); editorState.cr_z = n("cr-z");
     editorState.cr_vx = n("cr-vx"); editorState.cr_vy = n("cr-vy"); editorState.cr_vz = n("cr-vz");
     editorState.cr_tfin = n("cr-tfin");
     editorState.cr_mu = n("cr-mu");
-  }
-  if (editorState.ic_form !== "elements" && editorState.ic_form !== "cr3bp") {
+  } else {
     editorState.rx = n("ic-rx"); editorState.ry = n("ic-ry"); editorState.rz = n("ic-rz");
     editorState.vx = n("ic-vx"); editorState.vy = n("ic-vy"); editorState.vz = n("ic-vz");
   }
@@ -1364,7 +1509,6 @@ function readIc(): void {
   editorState.steps = parseInt((document.getElementById("ic-steps") as HTMLInputElement).value, 10);
   editorState.initial_mass_kg = n("ic-mass");
   editorState.integrator = (document.getElementById("ic-integrator") as HTMLSelectElement).value as Integrator;
-  editorState.t0_tdb = utcToTdbSeconds((document.getElementById("ic-epoch") as HTMLInputElement).value);
 }
 
 /** Repopulate the IC fields with a circular equatorial orbit at the body's
@@ -1710,6 +1854,12 @@ async function applyEditor(renderer: Renderer): Promise<void> {
   validateIc();
   const b = BODY[editorState.body];
 
+  // Drive the Earth rotation: synodic / CR3BP views freeze it (the frame
+  // absorbs the spin), inertial views track GMST. Record the mission epoch
+  // so the scrub handler can compute θ_G at any future tick.
+  activeEpochTdb = editorState.t0_tdb;
+  rotateEarth = editorState.mode === "J2000" && editorState.frame === "J2000";
+
   // ---- CR3BP path: non-dimensional propagation through /cr3bp/propagate. ----
   if (editorState.mode === "CR3BP") {
     setStatus("propagating CR3BP…");
@@ -1734,7 +1884,7 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     const t_si = res.t.map((t) => t * EM_TIME_UNIT_S);
     latestTrajectory = { t: t_si, states };
     renderer.setSceneScale(L * 1.5);
-    renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
+    renderer.setCentralBody(BODY.EARTH.radius, "EARTH", BODY.EARTH.polar_radius);
     renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
     moonTrackT = null; moonTrackR = null; latestMoonR = [L, 0, 0];
     paintTrajectory(statesToPositions(states));
@@ -1880,7 +2030,7 @@ async function applyEditor(renderer: Renderer): Promise<void> {
     ? Math.max(b.radius * 1.1, maxR * 1.2, moonRange * 1.2)
     : Math.max(b.radius * 1.1, maxR * 1.2);
   renderer.setSceneScale(sceneScale);
-  renderer.setCentralBody(b.radius, editorState.body);
+  renderer.setCentralBody(b.radius, editorState.body, b.polar_radius);
 
   // Moon rendering branch.
   if (synodicActive) {
@@ -2036,7 +2186,7 @@ async function runLyapunovPanel(renderer: Renderer): Promise<void> {
   });
   const orbitT_si = orbitProp.t.map((t) => t * EM_TIME_UNIT_S);
   renderer.setSceneScale(L * 1.5);
-  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH", BODY.EARTH.polar_radius);
   renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
   paintTrajectory(statesToPositions(orbitStates));
   renderer.setManifoldTubes(tubes);
@@ -2091,7 +2241,7 @@ async function runWsbPanel(renderer: Renderer): Promise<void> {
     }
   }
   renderer.setSceneScale(L * 1.5);
-  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH", BODY.EARTH.polar_radius);
   renderer.setSecondaryBody([L, 0, 0], BODY.MOON.radius);
   if (captured.length > 0) {
     renderer.drawTrajectory(new Float32Array(captured));
@@ -2145,7 +2295,7 @@ async function runLaunchPanel(renderer: Renderer): Promise<void> {
   const res = await runLaunchConfig(cfg);
   const positions = statesToPositions(res.states);
   renderer.setSceneScale(Math.max(BODY.EARTH.radius * 1.2, 1e7));
-  renderer.setCentralBody(BODY.EARTH.radius, "EARTH");
+  renderer.setCentralBody(BODY.EARTH.radius, "EARTH", BODY.EARTH.polar_radius);
   renderer.setSecondaryBody(null, 0);
   paintTrajectory(positions);
   setActiveTrajectory(res.t, res.states);
@@ -2491,14 +2641,20 @@ async function main(): Promise<void> {
       applyEditor(renderer).catch((err) => setStatus(`preset apply failed: ${(err as Error).message}`));
     });
 
-  // ---- IC-form (Cartesian / Elements / CR3BP) toggle ----
+  // ---- IC-form (Cartesian / Elements / ECEF / CR3BP) toggle ----
+  // Every J2000-family lens (cartesian, elements, ecef) reads to and writes
+  // from the same canonical `(rx..vz)` store. Switching is a round-trip:
+  // read the *old* lens into canonical, then fill the *new* lens.
   (document.getElementById("ic-form") as HTMLSelectElement)
     .addEventListener("change", (e) => {
       const newForm = (e.target as HTMLSelectElement).value as IcForm;
-      // Sync values across forms before switching, so the user doesn't lose state.
+      // Capture the current lens contents into canonical J2000 before flipping.
       if (editorState.ic_form === "elements" && newForm !== "elements") readElementsToState();
+      if (editorState.ic_form === "ecef"     && newForm !== "ecef")     readEcefToState();
       editorState.ic_form = newForm;
+      // Repopulate the destination lens from canonical.
       if (newForm === "elements") fillElementsFromState();
+      if (newForm === "ecef")     fillEcefFromState();
       if (newForm === "cr3bp") editorState.mode = "CR3BP";
       else if (editorState.mode === "CR3BP") editorState.mode = "J2000";
       (document.getElementById("ic-mode") as HTMLSelectElement).value = editorState.mode;

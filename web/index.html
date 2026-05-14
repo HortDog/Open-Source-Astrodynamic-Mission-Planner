@@ -19,7 +19,7 @@
       }
       header button:hover, header label.btn:hover { background: #0d280d; border-color: #40a040; }
       header button[aria-pressed="true"] { background: #1a4a1a; border-color: #60d060; }
-      header .badge { padding: 2px 6px; border-radius: 3px; font: 10px ui-monospace, monospace; }
+      header .badge { padding: 2px 6px; border-radius: 3px; font: 10px ui-monospace, monospace; cursor: help; }
       header .badge.ok  { background: #103810; color: #80ff80; border: 1px solid #2a702a; }
       header .badge.err { background: #380c10; color: #ff8090; border: 1px solid #802a30; }
       header .badge.pending { background: #1a1a1a; color: #888; border: 1px solid #333; }
@@ -67,34 +67,57 @@
       #editor .pill {
         display: inline-block; padding: 1px 6px; border-radius: 8px; background: #0a1a0a;
         border: 1px solid #2a602a; color: #a0ffa0; font: 10px ui-monospace, monospace;
+        cursor: help;
       }
       #editor .warn { color: #ff9080; font-size: 10px; padding: 2px 0; min-height: 0; }
       #editor .info { color: #80c0ff; font-size: 10px; padding: 2px 0; }
       #event-tl { width: 100%; height: 22px; background: #020a02; border: 1px solid #1a3a1a; margin-top: 4px; cursor: crosshair; }
+      /* Show the OS pointer over labels that have explanatory titles so the
+         user knows there's a tooltip. */
+      #editor label[title], #editor select[title], #editor input[title] { cursor: help; }
     </style>
   </head>
   <body>
     <div id="app">
       <header>
-        <h1>OAMP</h1>
-        <span class="ver" id="version"></span>
-        <span class="badge pending" id="spice-badge" title="SPICE kernel status">SPICE: …</span>
+        <h1 title="Open-source Astrodynamic Mission Planner — interactive sandbox for orbit design with high-fidelity Newtonian + CR3BP dynamics">OAMP</h1>
+        <span class="ver" id="version" title="Backend version reported by /api/health"></span>
+        <span class="badge pending" id="spice-badge"
+              title="SPICE kernel status. SPICE provides high-precision ephemerides for Sun/Moon/planets; required for third-body perturbations and the EM-synodic view frame.">SPICE: …</span>
         <span class="spacer"></span>
-        <button id="btn-leo" aria-pressed="true">LEO orbit (i=51.6°)</button>
-        <button id="btn-launch">Launch demo</button>
-        <button id="btn-leo-j2">LEO + J2 drift</button>
-        <button id="btn-hohmann">Hohmann LEO→GEO</button>
-        <button id="btn-lambert">Lambert intercept</button>
-        <button id="btn-cislunar">Cislunar TLI</button>
-        <button id="btn-cr3bp">EM Lagrange (CR3BP)</button>
-        <button id="btn-manifold">L1 Lyapunov + manifold</button>
-        <button id="btn-wsb">WSB diagnostic</button>
-        <button id="btn-editor">Maneuver editor</button>
-        <button id="btn-recenter" title="Center camera on spacecraft">⎈ recenter</button>
-        <button id="btn-save-mission" title="Save mission as JSON">↓ save</button>
-        <label class="btn" for="file-load-mission" title="Load mission JSON">↑ load
+
+        <!-- Curated demos: each one populates the editor with a representative
+             scenario and starts an animated playback. Hover for the takeaway. -->
+        <button id="btn-leo" aria-pressed="true"
+                title="400-km circular LEO at 51.6° inclination (ISS-like). The simplest two-body scenario; Earth rotates underneath at sidereal rate during playback.">LEO orbit (i=51.6°)</button>
+        <button id="btn-launch"
+                title="Open-loop launch simulator: vertical ascent with a pitch-program gravity turn, atmospheric drag, and an apoapsis circularization burn.">Launch demo</button>
+        <button id="btn-leo-j2"
+                title="LEO with J2 oblateness enabled and a long horizon — the orbit visibly precesses (RAAN drifts westward), the canonical 'this is why J2 matters' demo.">LEO + J2 drift</button>
+        <button id="btn-hohmann"
+                title="Closed-form Hohmann transfer from 400 km LEO to GEO. Two impulsive burns (Δv₁, Δv₂), half-orbit transfer ellipse, total Δv shown in status.">Hohmann LEO→GEO</button>
+        <button id="btn-lambert"
+                title="Lambert's problem: given two position vectors and a time-of-flight, solve for the connecting transfer orbit. Universal-variable solver with brentq root-finding.">Lambert intercept</button>
+        <button id="btn-cislunar"
+                title="Cislunar trans-lunar-injection: SPICE-derived Moon position at the demo epoch, Lambert TLI burn from LEO, ~3.5-day transfer with J2 + 3rd-body Moon perturbations active.">Cislunar TLI</button>
+        <button id="btn-cr3bp"
+                title="Circular Restricted Three-Body Problem: Earth–Moon Lagrange points (L1–L5), Jacobi-constant tracking, propagation in the rotating synodic frame.">EM Lagrange (CR3BP)</button>
+        <button id="btn-manifold"
+                title="Differential-correction-converged L1 planar Lyapunov periodic orbit + its unstable manifold tubes — the classic Conley–McGehee transit corridor toward Earth.">L1 Lyapunov + manifold</button>
+        <button id="btn-wsb"
+                title="Weak Stability Boundary diagnostic: sweep initial conditions near low-lunar orbits, classify each as ballistically-captured vs escaping. The boundary is the iconic Belbruno map.">WSB diagnostic</button>
+
+        <button id="btn-editor"
+                title="Open the maneuver editor sidebar — set ICs, add Δv kicks, configure perturbations, run solvers, and propagate your own mission.">Maneuver editor</button>
+        <button id="btn-recenter"
+                title="Center camera on spacecraft (switches the camera-target dropdown to 'spacecraft' and refreshes the view).">⎈ recenter</button>
+        <button id="btn-save-mission"
+                title="Download the current mission state (IC, perturbations, maneuvers, view settings) as a JSON file. Reload it later with ↑ load.">↓ save</button>
+        <label class="btn" for="file-load-mission"
+               title="Load a previously-saved mission JSON. The editor state is replaced and propagated immediately.">↑ load
           <input id="file-load-mission" type="file" accept=".json,application/json" style="display:none" /></label>
-        <button id="btn-export-traj" title="Export trajectory as CSV">⤓ traj</button>
+        <button id="btn-export-traj"
+                title="Download the active trajectory as a CSV (columns: t_s, rx_m, ry_m, rz_m, vx_m_s, vy_m_s, vz_m_s).">⤓ traj</button>
       </header>
       <div id="banner"></div>
       <main>
@@ -102,309 +125,430 @@
         <aside id="editor">
           <!-- Top: scenario preset + propagation mode -->
           <div class="row" style="gap:4px">
-            <label style="flex:1">Preset
-              <select id="ic-preset">
+            <label style="flex:1"
+                   title="Canonical orbits: ISS / LEO / GTO / GEO / Molniya / lunar / EML halo seeds. Selecting one populates the IC fields and starts a propagation.">Preset
+              <select id="ic-preset"
+                      title="Canonical orbits: ISS / LEO / GTO / GEO / Molniya / lunar / EML halo seeds. Selecting one populates the IC fields and starts a propagation.">
                 <option value="">— custom —</option>
-                <option value="iss">ISS 400 km, i=51.6°</option>
-                <option value="leo500">LEO 500 km, circular</option>
-                <option value="sso600">SSO 600 km, i=97.8°</option>
-                <option value="gto">GTO (250×35,786 km)</option>
-                <option value="geo">GEO 35,786 km</option>
-                <option value="molniya">Molniya, i=63.4°</option>
-                <option value="lunar100">Lunar 100 km circular</option>
-                <option value="eml1_halo">EML1 halo seed (CR3BP)</option>
-                <option value="eml2_halo">EML2 halo seed (CR3BP)</option>
+                <option value="iss" title="ISS-like circular orbit at 400 km altitude, 51.6° inclination. Period ≈ 92.7 min.">ISS 400 km, i=51.6°</option>
+                <option value="leo500" title="Equatorial circular LEO at 500 km altitude. Simplest baseline orbit.">LEO 500 km, circular</option>
+                <option value="sso600" title="Sun-Synchronous Orbit at 600 km, 97.78° inclination — chosen so the J2-driven nodal regression matches the Sun's apparent motion (one revolution per year).">SSO 600 km, i=97.8°</option>
+                <option value="gto" title="Geostationary Transfer Orbit: 250 × 35,786 km elliptical orbit. The typical post-launch state of a GEO comsat before its apogee-kick maneuver.">GTO (250×35,786 km)</option>
+                <option value="geo" title="Geostationary orbit at 35,786 km altitude (period = sidereal day). The spacecraft hovers over the equator.">GEO 35,786 km</option>
+                <option value="molniya" title="High-eccentricity, 12-hour Russian comsat orbit. i=63.4° freezes the argument of perigee under J2 — long dwell at apogee over the northern hemisphere.">Molniya, i=63.4°</option>
+                <option value="lunar100" title="100 km circular orbit around the Moon. Selecting this flips the central-body to Moon.">Lunar 100 km circular</option>
+                <option value="eml1_halo" title="Earth-Moon L1 halo orbit seed state in non-dimensional CR3BP coordinates. Use the Lyapunov panel below to converge to a periodic orbit.">EML1 halo seed (CR3BP)</option>
+                <option value="eml2_halo" title="Earth-Moon L2 halo orbit seed state. Beyond the Moon from Earth's perspective; used for missions like Queqiao relay and Artemis Gateway.">EML2 halo seed (CR3BP)</option>
               </select>
             </label>
-            <label style="flex:1">Mode
-              <select id="ic-mode">
-                <option value="J2000">J2000 / Cartesian</option>
-                <option value="CR3BP">CR3BP (non-dim)</option>
+            <label style="flex:1"
+                   title="Propagation type. J2000 runs the high-fidelity Newtonian engine; CR3BP runs the non-dimensional three-body propagator.">Mode
+              <select id="ic-mode"
+                      title="Propagation type. J2000 runs the high-fidelity Newtonian engine; CR3BP runs the non-dimensional three-body propagator.">
+                <option value="J2000" title="Inertial J2000 / Earth-equator-mean-of-J2000 frame. Newtonian propagator with optional J2…J6, drag, SRP, 3-body perturbations.">J2000 / Cartesian</option>
+                <option value="CR3BP" title="Circular Restricted Three-Body Problem. State is dimensionless (lengths in mean Earth–Moon distance, time in 1/mean-motion). Used for Lagrange-point and manifold studies.">CR3BP (non-dim)</option>
               </select>
             </label>
           </div>
 
           <div class="row" style="gap:4px">
-            <label style="flex:1">Central body
-              <select id="ic-body">
-                <option value="EARTH">Earth</option>
-                <option value="MOON">Moon</option>
+            <label style="flex:1"
+                   title="Central body for gravity, drag, and J_n. Changing it repopulates the IC with a circular orbit at the body's default altitude.">Central body
+              <select id="ic-body"
+                      title="Central body. Earth: μ=3.986e14, R=6378 km, atmosphere available. Moon: μ=4.905e12, R=1737 km, no atmosphere.">
+                <option value="EARTH" title="Earth. μ = 3.986004418×10¹⁴ m³/s², equatorial radius 6 378 137 m, J2 = 1.083e-3.">Earth</option>
+                <option value="MOON" title="Moon. μ = 4.905×10¹² m³/s², radius 1 737 400 m, J2 = 2.03e-4. Pole tilted ~23.5° from J2000 +Z.">Moon</option>
               </select>
             </label>
-            <label style="flex:1">View frame
-              <select id="ic-frame">
-                <option value="J2000">Inertial J2000</option>
-                <option value="EM_SYNODIC">EM synodic</option>
+            <label style="flex:1"
+                   title="Rendering frame. Inertial J2000 keeps the camera in the stars' frame and lets Earth rotate; EM synodic locks Earth and Moon to fixed positions and the trajectory rotates instead.">View frame
+              <select id="ic-frame"
+                      title="Rendering frame. Inertial J2000 = stars-fixed (Earth rotates). EM synodic = Earth/Moon-fixed rotating frame, needed to see Lagrange-point geometry.">
+                <option value="J2000" title="Inertial J2000 view. Earth rotates at sidereal rate; Moon follows its real ephemeris.">Inertial J2000</option>
+                <option value="EM_SYNODIC" title="Earth–Moon synodic rotating frame. Earth and Moon appear stationary; trajectories show their three-body geometry. Requires SPICE for the transform.">EM synodic</option>
               </select>
             </label>
           </div>
 
-          <!-- IC: Cartesian vs Elements toggle -->
+          <!-- IC: input-frame lens. All J2000-family views share one underlying
+               state; switching is a round-trip conversion. -->
           <div class="row" style="gap:4px">
-            <h2 style="flex:1;margin:0">Initial state</h2>
-            <select id="ic-form" style="width:auto">
-              <option value="cartesian">Cartesian (m, m/s)</option>
-              <option value="elements">Elements (km, deg)</option>
-              <option value="cr3bp">CR3BP non-dim</option>
+            <h2 style="flex:1;margin:0"
+                title="Initial conditions for the propagator. The underlying state is always J2000 Cartesian; the form selector below picks how to read/write it.">Initial state</h2>
+            <select id="ic-form" style="width:auto"
+                    title="Input lens for the IC fields. All J2000 lenses (Cartesian / elements / ECEF) round-trip through one canonical state; CR3BP is a separate non-dim store used by the three-body propagator.">
+              <option value="cartesian" title="Position and velocity in J2000 (Earth-centred inertial), SI units (m, m/s).">J2000 Cartesian (m, m/s)</option>
+              <option value="elements" title="Classical Keplerian elements: semi-major axis a, eccentricity e, inclination i, RAAN Ω, argument of periapsis ω, true anomaly ν.">J2000 elements (km, deg)</option>
+              <option value="ecef" title="Earth-Centred Earth-Fixed (rotating with Earth at ω⊕). The conversion to J2000 uses the Greenwich angle at the IC epoch.">ECEF / body-fixed (m, m/s)</option>
+              <option value="cr3bp" title="Non-dimensional CR3BP state: lengths in mean Earth-Moon distance, time in 1/mean-motion. Used by the three-body propagator.">CR3BP non-dim (synodic)</option>
             </select>
           </div>
 
-          <div id="ic-cartesian">
+          <div id="ic-cartesian"
+               title="J2000 Cartesian state: spacecraft position (r) and velocity (v) in Earth-centred inertial coordinates, meters and m/s.">
             <div class="vec3">
-              <input id="ic-rx" type="number" step="1000" placeholder="rx (m)" />
-              <input id="ic-ry" type="number" step="1000" placeholder="ry (m)" />
-              <input id="ic-rz" type="number" step="1000" placeholder="rz (m)" />
+              <input id="ic-rx" type="number" step="1000" placeholder="rx (m)" title="X component of position in J2000 (m). +X points toward the vernal equinox at J2000.0." />
+              <input id="ic-ry" type="number" step="1000" placeholder="ry (m)" title="Y component of position in J2000 (m). +Y = Z × X (right-handed)." />
+              <input id="ic-rz" type="number" step="1000" placeholder="rz (m)" title="Z component of position in J2000 (m). +Z = Earth's mean rotation pole at J2000.0." />
             </div>
             <div class="vec3" style="margin-top:3px">
-              <input id="ic-vx" type="number" step="10" placeholder="vx (m/s)" />
-              <input id="ic-vy" type="number" step="10" placeholder="vy (m/s)" />
-              <input id="ic-vz" type="number" step="10" placeholder="vz (m/s)" />
+              <input id="ic-vx" type="number" step="10" placeholder="vx (m/s)" title="X velocity component in J2000 (m/s)." />
+              <input id="ic-vy" type="number" step="10" placeholder="vy (m/s)" title="Y velocity component in J2000 (m/s)." />
+              <input id="ic-vz" type="number" step="10" placeholder="vz (m/s)" title="Z velocity component in J2000 (m/s)." />
             </div>
           </div>
 
-          <div id="ic-elements" style="display:none">
+          <div id="ic-elements" style="display:none"
+               title="Classical Keplerian orbital elements. Equivalent to the Cartesian state — switching between forms is a lossless conversion.">
             <div class="grid2">
-              <label>a (km)<input id="ic-sma" type="number" step="10" /></label>
-              <label>e<input id="ic-ecc" type="number" step="0.01" min="0" /></label>
-              <label>i (deg)<input id="ic-inc" type="number" step="0.5" /></label>
-              <label>Ω (deg)<input id="ic-raan" type="number" step="0.5" /></label>
-              <label>ω (deg)<input id="ic-argp" type="number" step="0.5" /></label>
-              <label>ν (deg)<input id="ic-nu" type="number" step="0.5" /></label>
+              <label title="Semi-major axis (km). Half the long-axis of the ellipse; sets the orbital period via T = 2π√(a³/μ).">a (km)<input id="ic-sma" type="number" step="10" title="Semi-major axis (km). a > 0 = bound orbit; a < 0 = hyperbolic." /></label>
+              <label title="Eccentricity. 0 = circle, 0–1 = ellipse, 1 = parabola, >1 = hyperbola.">e<input id="ic-ecc" type="number" step="0.01" min="0" title="Eccentricity (dimensionless). 0 = circular; <1 = elliptic." /></label>
+              <label title="Inclination (deg). Angle between orbit plane and reference equator. 0° = equatorial prograde, 90° = polar, 180° = equatorial retrograde.">i (deg)<input id="ic-inc" type="number" step="0.5" title="Inclination (deg). 0–180°." /></label>
+              <label title="Right Ascension of the Ascending Node (deg). Longitude of the node where the orbit crosses the equator going north.">Ω (deg)<input id="ic-raan" type="number" step="0.5" title="RAAN (deg). 0–360°. Drifts secularly under J2 (nodal regression)." /></label>
+              <label title="Argument of periapsis (deg). Angle from the ascending node to periapsis, measured along the orbit.">ω (deg)<input id="ic-argp" type="number" step="0.5" title="Argument of periapsis ω (deg). 0–360°." /></label>
+              <label title="True anomaly (deg). Current position angle from periapsis, measured along the orbit. 0° at periapsis, 180° at apoapsis.">ν (deg)<input id="ic-nu" type="number" step="0.5" title="True anomaly (deg). 0–360°. Advances rapidly near periapsis, slowly near apoapsis." /></label>
             </div>
           </div>
 
-          <div id="ic-cr3bp" style="display:none">
+          <div id="ic-ecef" style="display:none"
+               title="ECEF / Earth-Centred Earth-Fixed: rotates with Earth at sidereal rate. The conversion to inertial J2000 uses the Greenwich angle at the configured epoch.">
             <div class="vec3">
-              <input id="cr-x" type="number" step="0.001" placeholder="x" />
-              <input id="cr-y" type="number" step="0.001" placeholder="y" />
-              <input id="cr-z" type="number" step="0.001" placeholder="z" />
+              <input id="ic-erx" type="number" step="1000" placeholder="rx_ECEF (m)" title="X position in ECEF (m). +X points to the prime meridian (Greenwich)." />
+              <input id="ic-ery" type="number" step="1000" placeholder="ry_ECEF (m)" title="Y position in ECEF (m). +Y = Z × X (eastward at the equator)." />
+              <input id="ic-erz" type="number" step="1000" placeholder="rz_ECEF (m)" title="Z position in ECEF (m). +Z = Earth's rotation pole." />
             </div>
             <div class="vec3" style="margin-top:3px">
-              <input id="cr-vx" type="number" step="0.01" placeholder="vx" />
-              <input id="cr-vy" type="number" step="0.01" placeholder="vy" />
-              <input id="cr-vz" type="number" step="0.01" placeholder="vz" />
+              <input id="ic-evx" type="number" step="10" placeholder="vx_ECEF (m/s)" title="X velocity in ECEF (m/s). Note: a geostationary satellite has v_ECEF ≈ 0." />
+              <input id="ic-evy" type="number" step="10" placeholder="vy_ECEF (m/s)" title="Y velocity in ECEF (m/s)." />
+              <input id="ic-evz" type="number" step="10" placeholder="vz_ECEF (m/s)" title="Z velocity in ECEF (m/s)." />
+            </div>
+            <div class="info">ECEF state at the configured epoch. Converted to J2000 inertial via the Greenwich angle at t₀.</div>
+          </div>
+
+          <div id="ic-cr3bp" style="display:none"
+               title="Non-dimensional CR3BP state in the Earth–Moon synodic frame. Lengths in mean EM distance (≈384 400 km), time in 1/n (n = EM mean motion ≈ 2.66e-6 rad/s).">
+            <div class="vec3">
+              <input id="cr-x" type="number" step="0.001" placeholder="x" title="Non-dim x (synodic). Earth sits at (-μ, 0, 0), Moon at (1-μ, 0, 0)." />
+              <input id="cr-y" type="number" step="0.001" placeholder="y" title="Non-dim y (synodic, in-plane perpendicular to Earth-Moon line)." />
+              <input id="cr-z" type="number" step="0.001" placeholder="z" title="Non-dim z (synodic, out-of-plane)." />
+            </div>
+            <div class="vec3" style="margin-top:3px">
+              <input id="cr-vx" type="number" step="0.01" placeholder="vx" title="Non-dim ẋ. 1 unit ≈ 1024 m/s in SI for the EM system." />
+              <input id="cr-vy" type="number" step="0.01" placeholder="vy" title="Non-dim ẏ." />
+              <input id="cr-vz" type="number" step="0.01" placeholder="vz" title="Non-dim ż." />
             </div>
             <div class="row" style="margin-top:3px">
-              <label style="flex:1">t_final (non-dim)
-                <input id="cr-tfin" type="number" step="0.1" value="6.0" />
+              <label style="flex:1"
+                     title="Propagation horizon in non-dimensional time. One unit ≈ 1/n ≈ 4.35 days for the Earth–Moon system; 2π units = 1 sidereal lunar month.">t_final (non-dim)
+                <input id="cr-tfin" type="number" step="0.1" value="6.0" title="Non-dim end time. 6.0 ≈ 26 days." />
               </label>
-              <label style="flex:1">mu
-                <input id="cr-mu" type="number" step="0.0001" value="0.01215" />
+              <label style="flex:1"
+                     title="Mass ratio μ = m₂ / (m₁+m₂). Earth-Moon ≈ 0.01215; Sun-Earth ≈ 3.04e-6.">mu
+                <input id="cr-mu" type="number" step="0.0001" value="0.01215" title="CR3BP mass ratio. 0.01215 = Earth-Moon (default); 3.04e-6 = Sun-Earth." />
               </label>
             </div>
           </div>
 
           <div class="row" style="margin-top:3px">
-            <label style="flex:1">Duration (s)
-              <input id="ic-duration" type="number" step="60" />
+            <label style="flex:1"
+                   title="Propagation horizon in seconds. The integrator runs from t=0 to t=duration; trajectories are uniformly sampled at `steps` points across the arc.">Duration (s)
+              <input id="ic-duration" type="number" step="60" title="Propagation duration (s). Use seconds even though playback formats minutes/hours/days for readability." />
             </label>
-            <label style="flex:1">Steps
-              <input id="ic-steps" type="number" step="50" min="2" max="20000" />
+            <label style="flex:1"
+                   title="Number of output samples. Higher = smoother trajectory + slower. >2000 auto-enables streaming. Max 20000.">Steps
+              <input id="ic-steps" type="number" step="50" min="2" max="20000"
+                     title="Output sample count, 2–20 000. Affects rendering smoothness, not integrator accuracy (DOP853 is adaptive)." />
             </label>
-            <label style="flex:1">Mass (kg)
-              <input id="ic-mass" type="number" step="100" min="1" value="1000" />
+            <label style="flex:1"
+                   title="Initial wet mass in kg. Drives drag area-to-mass and finite-burn thrust acceleration. Defaults to 1000 kg.">Mass (kg)
+              <input id="ic-mass" type="number" step="100" min="1" value="1000"
+                     title="Initial spacecraft mass (kg). Required when finite burns are present." />
             </label>
           </div>
           <div class="row" style="margin-top:3px">
-            <label style="flex:1">Integrator
-              <select id="ic-integrator" title="DOP853: adaptive RK8 (default). Verlet/Yoshida: symplectic, energy-preserving for long arcs.">
-                <option value="dop853">DOP853 (adaptive)</option>
-                <option value="verlet">Verlet (symplectic)</option>
-                <option value="yoshida4">Yoshida 4 (symplectic)</option>
+            <label style="flex:1"
+                   title="Numerical integrator. DOP853 is adaptive RK8(7) — default for short arcs. Verlet/Yoshida are symplectic — energy-preserving for multi-orbit propagation but fixed-step.">Integrator
+              <select id="ic-integrator"
+                      title="DOP853: adaptive 8th-order Runge–Kutta, scipy default; best for short arcs with adaptive accuracy. Verlet: 2nd-order symplectic, energy-stable. Yoshida 4: 4th-order symplectic.">
+                <option value="dop853" title="Adaptive 8th-order Runge–Kutta. Best general-purpose choice. Required for finite burns.">DOP853 (adaptive)</option>
+                <option value="verlet" title="2nd-order velocity-Verlet symplectic. Energy-stable for multi-revolution propagation. Fixed time step.">Verlet (symplectic)</option>
+                <option value="yoshida4" title="4th-order Yoshida symplectic. Higher accuracy than Verlet at the same step size. Fixed time step.">Yoshida 4 (symplectic)</option>
               </select>
             </label>
-            <label style="flex:1">Epoch (UTC)
-              <input id="ic-epoch" type="datetime-local" step="1" title="t0 for SPICE-dependent perturbations (3rd body, SRP)" />
+            <label style="flex:1"
+                   title="Mission start epoch in UTC. Required for SPICE-driven perturbations (third-body Moon/Sun, SRP), the Greenwich-angle calculation (ECEF + Earth rotation in the renderer), and the EM-synodic transform.">Epoch (UTC)
+              <input id="ic-epoch" type="datetime-local" step="1"
+                     title="Mission start epoch (UTC). Drives SPICE ephemeris lookups, Earth's rotation phase, and any frame conversion that depends on time." />
             </label>
-            <label style="white-space:nowrap"><input id="ic-stream" type="checkbox" /> Live</label>
+            <label style="white-space:nowrap"
+                   title="Stream propagation results progressively (NDJSON chunks). Auto-enabled when steps > 2000; lets you see the trajectory grow rather than wait for the full result.">
+              <input id="ic-stream" type="checkbox"
+                     title="Enable progressive streaming of the trajectory. Auto-enabled when steps > 2000." /> Live
+            </label>
           </div>
-          <div id="ic-warnings" class="warn"></div>
+          <div id="ic-warnings" class="warn"
+               title="Live validation warnings: periapsis below body surface, maneuver past horizon, etc. Empty when no issues."></div>
 
           <details>
-            <summary>Perturbations</summary>
+            <summary title="Force-model knobs. Each one adds a perturbation to the two-body central force. Use the 'active forces' line at the bottom to see what the server actually applied.">Perturbations</summary>
             <div class="body">
-              <label class="row" style="gap:6px">
-                <input id="pert-j2" type="checkbox" /> Zonal harmonics J2…
-                <select id="pert-jn-max" style="width:auto">
-                  <option value="2">J2</option>
-                  <option value="3">J3</option>
-                  <option value="4">J4</option>
-                  <option value="5">J5</option>
-                  <option value="6">J6</option>
+              <label class="row" style="gap:6px"
+                     title="Zonal spherical-harmonic terms J2…J6. J2 captures Earth's equatorial bulge (~1e-3 effect, dominates over a few orbits); J3–J6 are 1000× smaller.">
+                <input id="pert-j2" type="checkbox"
+                       title="Enable zonal harmonics. Up to J6 supported; the order is set by the dropdown to the right." />
+                Zonal harmonics J2…
+                <select id="pert-jn-max" style="width:auto"
+                        title="Highest zonal order to include. J2 = oblateness only; J6 = full set with octantal symmetry.">
+                  <option value="2" title="J2 only — Earth oblateness. Sufficient for ~99% of LEO mission-design.">J2</option>
+                  <option value="3" title="Through J3 — adds the slight asymmetry in Earth's pear shape.">J3</option>
+                  <option value="4" title="Through J4.">J4</option>
+                  <option value="5" title="Through J5.">J5</option>
+                  <option value="6" title="Through J6 — diminishing returns past J4 for most missions.">J6</option>
                 </select>
               </label>
-              <label class="row" style="margin-top:3px;gap:6px">
-                <input id="pert-drag" type="checkbox" /> Atmospheric drag
-                <select id="pert-drag-model" style="width:auto">
-                  <option value="exponential">exponential</option>
-                  <option value="msis">MSIS</option>
+              <label class="row" style="margin-top:3px;gap:6px"
+                     title="Atmospheric drag perturbation. Earth only. Requires a vehicle area + Cd (drag coefficient) below.">
+                <input id="pert-drag" type="checkbox"
+                       title="Enable atmospheric drag (Earth only). a_drag = -½ ρ v_rel² Cd A/m." />
+                Atmospheric drag
+                <select id="pert-drag-model" style="width:auto"
+                        title="Density model. Exponential: ρ = ρ₀ exp(-h/H) — fast and simple. MSIS: NRLMSISE-00 — temperature/F10.7-driven, more realistic above ~120 km.">
+                  <option value="exponential" title="Exponential atmosphere ρ = ρ₀ exp(-h/H₈ₖₘ). Decent through ~80 km.">exponential</option>
+                  <option value="msis" title="NRLMSISE-00 / MSIS-2 from pymsis. Accurate above 120 km; uses solar/geomagnetic indices.">MSIS</option>
                 </select>
               </label>
-              <label style="margin-top:3px"><input id="pert-srp" type="checkbox" /> Solar radiation pressure</label>
-              <label style="margin-top:3px"><input id="pert-3b-moon" type="checkbox" /> Third body: Moon</label>
-              <label style="margin-top:3px"><input id="pert-3b-sun" type="checkbox" /> Third body: Sun</label>
-              <div id="pert-vehicle" style="display:none; margin-top:4px">
+              <label style="margin-top:3px"
+                     title="Solar radiation pressure. Cannonball model with cylindrical Earth shadow. Needs an SRP area + Cr below.">
+                <input id="pert-srp" type="checkbox"
+                       title="Enable cannonball SRP. a_SRP = ν · (P_☉/c) · A·Cr/m. Cylindrical shadow → on/off at the terminator." />
+                Solar radiation pressure
+              </label>
+              <label style="margin-top:3px"
+                     title="Third-body gravity from the Moon via SPICE ephemeris. Significant for GEO and beyond; visible drift over a few orbits.">
+                <input id="pert-3b-moon" type="checkbox"
+                       title="Third-body Moon. Direct + indirect terms; SPICE-driven position." />
+                Third body: Moon
+              </label>
+              <label style="margin-top:3px"
+                     title="Third-body gravity from the Sun. Mainly matters for HEO/GEO and deep-space; ~5×10⁻⁶ m/s² at GEO.">
+                <input id="pert-3b-sun" type="checkbox"
+                       title="Third-body Sun." />
+                Third body: Sun
+              </label>
+              <div id="pert-vehicle" style="display:none; margin-top:4px"
+                   title="Vehicle properties needed when drag and/or SRP are active.">
                 <div class="vec3">
-                  <label>mass (kg)<input id="pert-mass" type="number" value="500" step="10" min="1" /></label>
-                  <label>drag A (m²)<input id="pert-area" type="number" value="4" step="0.5" min="0.1" /></label>
-                  <label>Cd<input id="pert-cd" type="number" value="2.2" step="0.1" min="0" /></label>
+                  <label title="Vehicle mass for drag/SRP. Used in a/m ratio; typically the dry mass."><span>mass (kg)</span><input id="pert-mass" type="number" value="500" step="10" min="1" title="Vehicle mass (kg) for drag/SRP." /></label>
+                  <label title="Drag cross-section area (m²). Roughly the projected area normal to v_rel."><span>drag A (m²)</span><input id="pert-area" type="number" value="4" step="0.5" min="0.1" title="Drag area (m²)." /></label>
+                  <label title="Drag coefficient. ~2.2 is the standard 'flat plate in free-molecular flow' value."><span>Cd</span><input id="pert-cd" type="number" value="2.2" step="0.1" min="0" title="Drag coefficient. Cubesat ~2.2, atmospheric re-entry ~1.0." /></label>
                 </div>
                 <div class="vec3" style="margin-top:3px">
-                  <label>SRP A (m²)<input id="pert-srp-area" type="number" value="4" step="0.5" min="0.1" /></label>
-                  <label>Cr<input id="pert-srp-cr" type="number" value="1.5" step="0.1" min="0" max="2" /></label>
+                  <label title="Solar-radiation-pressure cross-section area (m²). Typically the area facing the Sun."><span>SRP A (m²)</span><input id="pert-srp-area" type="number" value="4" step="0.5" min="0.1" title="SRP area (m²)." /></label>
+                  <label title="Radiation-pressure coefficient. 1 = perfectly absorbing, 2 = perfectly reflecting, ~1.5 = typical."><span>Cr</span><input id="pert-srp-cr" type="number" value="1.5" step="0.1" min="0" max="2" title="SRP coefficient Cr ∈ [1, 2]. 1.5 is a sensible default." /></label>
                   <span></span>
                 </div>
               </div>
-              <div id="pert-active" style="margin-top:4px; font-family: ui-monospace, monospace; font-size: 10px; opacity:.75"></div>
+              <div id="pert-active" style="margin-top:4px; font-family: ui-monospace, monospace; font-size: 10px; opacity:.75"
+                   title="Force model the server actually applied on the most recent propagation. Useful for confirming what's switched on."></div>
             </div>
           </details>
 
           <details>
-            <summary>Solvers</summary>
+            <summary title="Closed-form and numerical mission-design solvers. Each one writes its result back into the editor and runs an immediate propagation.">Solvers</summary>
             <div class="body">
-              <label>Type
-                <select id="solver-type">
-                  <option value="hohmann">Hohmann coplanar transfer</option>
-                  <option value="lambert">Lambert intercept</option>
-                  <option value="multi-burn">Multi-burn NLP (CasADi)</option>
-                  <option value="tle">TLE ingest (SGP4)</option>
+              <label title="Solver to run. Hohmann/Lambert are analytic; multi-burn is a CasADi NLP; TLE pulls a real satellite's elements.">Type
+                <select id="solver-type"
+                        title="Hohmann: 2-burn coplanar transfer (closed form). Lambert: 2-position-vector boundary-value problem. Multi-burn: CasADi NLP. TLE: parse two-line elements + propagate via SGP4.">
+                  <option value="hohmann" title="Closed-form Hohmann two-impulse coplanar transfer between two circular orbits. Outputs Δv₁, Δv₂, transfer time.">Hohmann coplanar transfer</option>
+                  <option value="lambert" title="Lambert's problem: solve for the unique conic that connects r₁ and r₂ in the given time-of-flight. Universal-variable solver.">Lambert intercept</option>
+                  <option value="multi-burn" title="CasADi/IPOPT fuel-optimal multi-impulse NLP. Min Σ|Δv| s.t. final state = target. Burns auto-loaded as RIC maneuvers.">Multi-burn NLP (CasADi)</option>
+                  <option value="tle" title="Ingest a Two-Line Element set (catalog format used by NORAD/Celestrak). Parsed via SGP4 and converted to an osculating Cartesian state.">TLE ingest (SGP4)</option>
                 </select>
               </label>
               <div id="solver-form" style="margin-top:4px"></div>
               <div class="row" style="margin-top:4px">
-                <button id="btn-solve" class="primary" style="flex:1">Solve &amp; load into editor</button>
+                <button id="btn-solve" class="primary" style="flex:1"
+                        title="Run the selected solver, write the result into the editor's IC + maneuver list, and propagate.">Solve &amp; load into editor</button>
               </div>
-              <div id="solver-info" style="margin-top:4px;font-family:ui-monospace,monospace;font-size:10px;opacity:.85"></div>
+              <div id="solver-info" style="margin-top:4px;font-family:ui-monospace,monospace;font-size:10px;opacity:.85"
+                   title="Solver output: Δv magnitudes, time-of-flight, convergence status."></div>
             </div>
           </details>
 
           <details open>
-            <summary>Maneuvers (RIC frame) <span class="pill" id="dv-budget">Σ|Δv| = 0 m/s</span></summary>
+            <summary title="Δv kicks applied between integration arcs. Impulsive burns are zero-duration; finite burns model continuous thrust over a duration.">
+              Maneuvers (RIC frame)
+              <span class="pill" id="dv-budget" title="Total Δv expenditure: Σ|impulses| + ∫|thrust| dτ. Updated live as you edit maneuvers.">Σ|Δv| = 0 m/s</span>
+            </summary>
             <div class="body">
-              <div id="man-list"></div>
-              <svg id="event-tl"></svg>
-              <button id="btn-add-man" style="margin-top: 4px">+ Add maneuver</button>
+              <div id="man-list"
+                   title="Per-maneuver editor rows. Each row has a kind selector (impulsive/finite), a time, and either Δv components or thrust+duration."></div>
+              <svg id="event-tl"
+                   title="Visual timeline of all events across the propagation horizon. Circles = impulsive burns; red rectangles = finite-burn windows."></svg>
+              <button id="btn-add-man" style="margin-top: 4px"
+                      title="Insert a new impulsive maneuver at the current end-of-list time. Edit its row to retime / change Δv components.">+ Add maneuver</button>
             </div>
           </details>
 
           <details>
-            <summary>CR3BP — Lyapunov &amp; manifolds</summary>
+            <summary title="Compute a planar Lyapunov periodic orbit at L1 or L2 and its invariant manifolds. Pure CR3BP — no SPICE needed.">CR3BP — Lyapunov &amp; manifolds</summary>
             <div class="body">
               <div class="row" style="gap:4px">
-                <label style="flex:1">L point
-                  <select id="lyap-L"><option value="1">L1</option><option value="2">L2</option></select>
+                <label style="flex:1"
+                       title="Collinear Lagrange point to orbit. L1 = Earth-Moon equilibrium between the two; L2 = beyond Moon.">L point
+                  <select id="lyap-L" title="L1 sits between Earth and Moon; L2 sits beyond Moon. Both host planar Lyapunov families.">
+                    <option value="1" title="Earth-Moon L1: between Earth and Moon, ~326 000 km from Earth.">L1</option>
+                    <option value="2" title="Earth-Moon L2: beyond Moon from Earth, ~445 000 km from Earth. Hosts NRHO orbits used by Gateway / Artemis.">L2</option>
+                  </select>
                 </label>
-                <label style="flex:1">Ax
-                  <input id="lyap-Ax" type="number" step="0.005" min="0.005" max="0.15" value="0.04" />
-                </label>
-              </div>
-              <div class="row" style="gap:4px;margin-top:3px">
-                <label style="flex:1">Direction
-                  <select id="lyap-dir"><option value="unstable">unstable</option><option value="stable">stable</option></select>
-                </label>
-                <label style="flex:1">Branch
-                  <select id="lyap-branch"><option value="+">+</option><option value="-">−</option></select>
+                <label style="flex:1"
+                       title="In-plane amplitude (non-dim). Larger = bigger orbit but harder for differential correction to converge.">Ax
+                  <input id="lyap-Ax" type="number" step="0.005" min="0.005" max="0.15" value="0.04"
+                         title="Lyapunov in-plane amplitude (non-dim). 0.04 ≈ 15 400 km cross-section. Try 0.005–0.1." />
                 </label>
               </div>
               <div class="row" style="gap:4px;margin-top:3px">
-                <label style="flex:1">duration
-                  <input id="lyap-dur" type="number" step="0.5" min="1" max="20" value="6.0" />
+                <label style="flex:1"
+                       title="Manifold direction. Stable: trajectories that approach the orbit. Unstable: trajectories that leave it.">Direction
+                  <select id="lyap-dir" title="Stable manifold integrates backward in time; unstable forward. Both are computed by perturbing along the eigenvectors of the monodromy matrix.">
+                    <option value="unstable" title="Unstable manifold — outbound trajectories that flow away from the Lyapunov orbit. Used for designing departures and Earth-return.">unstable</option>
+                    <option value="stable" title="Stable manifold — inbound trajectories that asymptotically approach the orbit. Used for arrivals / capture.">stable</option>
+                  </select>
                 </label>
-                <label style="flex:1">samples
-                  <input id="lyap-n" type="number" step="4" min="4" max="200" value="40" />
+                <label style="flex:1"
+                       title="Branch of the manifold. + and − pick the two sides of the unstable/stable eigenvector pair.">Branch
+                  <select id="lyap-branch" title="Manifold branches: + interior to L1/L2, − exterior. Together they cover both sides of the orbit.">
+                    <option value="+" title="+ branch — trajectories on one side of the periodic orbit (toward Earth for L1 unstable).">+</option>
+                    <option value="-" title="− branch — opposite side (toward Moon for L1 unstable).">−</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row" style="gap:4px;margin-top:3px">
+                <label style="flex:1"
+                       title="Manifold trajectory duration in non-dim time. Longer integrations cover more of the manifold tube but get noisier far from the orbit.">duration
+                  <input id="lyap-dur" type="number" step="0.5" min="1" max="20" value="6.0"
+                         title="Manifold integration time (non-dim). 6 ≈ 26 days." />
+                </label>
+                <label style="flex:1"
+                       title="How many trajectories to sample along the periodic orbit. Each one gets a small perturbation along the manifold eigenvector and is integrated.">samples
+                  <input id="lyap-n" type="number" step="4" min="4" max="200" value="40"
+                         title="Manifold sample count. 40 is a reasonable density; 100+ makes a dense tube." />
                 </label>
               </div>
               <div class="row" style="margin-top:3px">
-                <button id="btn-lyap-run" class="primary" style="flex:1">Compute Lyapunov + manifold</button>
+                <button id="btn-lyap-run" class="primary" style="flex:1"
+                        title="Run the differential corrector on the seed state to converge a periodic Lyapunov orbit, then propagate the requested manifold branches.">Compute Lyapunov + manifold</button>
               </div>
-              <div id="lyap-info" class="info"></div>
+              <div id="lyap-info" class="info"
+                   title="Solver output: orbit period, Jacobi constant, DC residual, manifold tube count."></div>
             </div>
           </details>
 
           <details>
-            <summary>WSB diagnostic</summary>
+            <summary title="Weak Stability Boundary diagnostic. Sweeps an (altitude, angle) grid of initial conditions near the Moon and classifies each as captured or escaping.">WSB diagnostic</summary>
             <div class="body">
               <div class="grid2">
-                <label>alt min (km)<input id="wsb-alt-min" type="number" step="100" value="100" /></label>
-                <label>alt max (km)<input id="wsb-alt-max" type="number" step="100" value="5000" /></label>
-                <label>n_alt<input id="wsb-alt-n" type="number" step="1" min="2" max="40" value="12" /></label>
-                <label>n_angle<input id="wsb-ang-n" type="number" step="1" min="2" max="40" value="12" /></label>
-                <label>duration<input id="wsb-dur" type="number" step="0.5" min="1" max="20" value="6.0" /></label>
-                <label>escape r<input id="wsb-esc" type="number" step="0.5" min="1" max="5" value="2.0" /></label>
+                <label title="Lowest test altitude above the Moon's surface (km)."><span>alt min (km)</span><input id="wsb-alt-min" type="number" step="100" value="100" title="Lower altitude bound for the WSB sweep (km above lunar surface)." /></label>
+                <label title="Highest test altitude (km). Crank up to see the WSB filament reach further out."><span>alt max (km)</span><input id="wsb-alt-max" type="number" step="100" value="5000" title="Upper altitude bound (km)." /></label>
+                <label title="Altitude grid resolution. Higher = finer WSB map but quadratic cost (n_alt × n_angle propagations)."><span>n_alt</span><input id="wsb-alt-n" type="number" step="1" min="2" max="40" value="12" title="Number of altitude samples (2–40)." /></label>
+                <label title="Angular grid resolution around the Moon."><span>n_angle</span><input id="wsb-ang-n" type="number" step="1" min="2" max="40" value="12" title="Number of angular samples (2–40)." /></label>
+                <label title="How long to back-integrate each grid cell. Captured = stays bounded for the full duration."><span>duration</span><input id="wsb-dur" type="number" step="0.5" min="1" max="20" value="6.0" title="Back-propagation horizon (non-dim time)." /></label>
+                <label title="Escape radius threshold (non-dim, multiples of EM distance). If the trajectory exceeds this, it's classified as 'escaped'."><span>escape r</span><input id="wsb-esc" type="number" step="0.5" min="1" max="5" value="2.0" title="Escape-radius threshold. 2.0 = 2× Earth–Moon distance." /></label>
               </div>
               <div class="row" style="margin-top:3px">
-                <button id="btn-wsb-run" class="primary" style="flex:1">Compute WSB grid</button>
+                <button id="btn-wsb-run" class="primary" style="flex:1"
+                        title="Run the WSB capture-classification grid. Captured cells are rendered as a green scatter cloud; escapes as faint red.">Compute WSB grid</button>
               </div>
-              <div id="wsb-info" class="info"></div>
+              <div id="wsb-info" class="info"
+                   title="WSB output: captured / escaped / uncertain counts."></div>
             </div>
           </details>
 
           <details>
-            <summary>Launch config</summary>
+            <summary title="Open-loop launch simulator. Vertical-then-gravity-turn ascent + apoapsis circularization burn. Edit the vehicle and pitch program here.">Launch config</summary>
             <div class="body">
               <div class="grid2">
-                <label>dry mass (kg)<input id="lc-dry" type="number" step="100" /></label>
-                <label>prop mass (kg)<input id="lc-prop" type="number" step="100" /></label>
-                <label>thrust (N)<input id="lc-thrust" type="number" step="1000" /></label>
-                <label>Isp (s)<input id="lc-isp" type="number" step="1" /></label>
-                <label>drag area (m²)<input id="lc-darea" type="number" step="1" /></label>
-                <label>Cd<input id="lc-cd" type="number" step="0.05" /></label>
-                <label>pitch start (m)<input id="lc-pstart" type="number" step="100" /></label>
-                <label>pitch target (m)<input id="lc-ptarget" type="number" step="1000" /></label>
-                <label>pitch angle (°)<input id="lc-pdeg" type="number" step="1" /></label>
-                <label>coast (s)<input id="lc-coast" type="number" step="10" /></label>
+                <label title="Vehicle empty mass (kg). Doesn't deplete during the burn."><span>dry mass (kg)</span><input id="lc-dry" type="number" step="100" title="Dry mass (kg)." /></label>
+                <label title="Propellant mass (kg). Burned at ṁ = T/(g₀·Isp); when zero, the engine cuts off."><span>prop mass (kg)</span><input id="lc-prop" type="number" step="100" title="Propellant mass (kg)." /></label>
+                <label title="Thrust (Newtons). Held constant throughout the burn."><span>thrust (N)</span><input id="lc-thrust" type="number" step="1000" title="Thrust (N)." /></label>
+                <label title="Specific impulse (seconds). Defines exhaust velocity ve = g₀·Isp. Kerolox ~300, hydrolox ~440, ion ~3000."><span>Isp (s)</span><input id="lc-isp" type="number" step="1" title="Isp (s). 300 ≈ kerolox; 440 ≈ hydrolox." /></label>
+                <label title="Drag cross-section (m²)."><span>drag area (m²)</span><input id="lc-darea" type="number" step="1" title="Drag area (m²)." /></label>
+                <label title="Drag coefficient. ~0.3 for a streamlined rocket."><span>Cd</span><input id="lc-cd" type="number" step="0.05" title="Drag coefficient. ~0.3 for a slender rocket; ~1.2 for a blunt-body re-entry." /></label>
+                <label title="Altitude at which pitch-over begins (m). Below this, thrust is purely vertical."><span>pitch start (m)</span><input id="lc-pstart" type="number" step="100" title="Altitude at which the pitch program starts (m)." /></label>
+                <label title="Altitude at which the pitch reaches its target angle (m). Thrust rotates linearly between pitch_start_alt and pitch_target_alt."><span>pitch target (m)</span><input id="lc-ptarget" type="number" step="1000" title="Pitch-program completion altitude (m). After this, attitude is held at the target angle." /></label>
+                <label title="Final pitch angle from local vertical (deg). 88° → mostly horizontal (insertion); 90° = purely horizontal."><span>pitch angle (°)</span><input id="lc-pdeg" type="number" step="1" title="Target pitch angle (deg from local vertical)." /></label>
+                <label title="Coast duration after engine cutoff before the simulation ends. Lets the rocket reach apoapsis for the circ burn."><span>coast (s)</span><input id="lc-coast" type="number" step="10" title="Post-burnout coast (s) before the apoapsis circularization burn." /></label>
               </div>
               <div class="row" style="margin-top:3px">
-                <button id="btn-lc-defaults">Defaults</button>
-                <button id="btn-lc-run" class="primary" style="flex:1">Run launch</button>
+                <button id="btn-lc-defaults"
+                        title="Load a Falcon-9-like default config from the backend (/launch/default-config).">Defaults</button>
+                <button id="btn-lc-run" class="primary" style="flex:1"
+                        title="Run the launch simulator with the current vehicle/pitch settings.">Run launch</button>
               </div>
-              <div id="lc-info" class="info"></div>
+              <div id="lc-info" class="info"
+                   title="Launch output: burnout time, circularization Δv, final orbit periapsis × apoapsis."></div>
             </div>
           </details>
 
           <div class="section row">
-            <button id="btn-apply" class="primary">Propagate</button>
-            <button id="btn-reset">Reset to LEO</button>
+            <button id="btn-apply" class="primary"
+                    title="Run the propagator with the current IC + perturbations + maneuvers. Streams in chunks when steps > 2000.">Propagate</button>
+            <button id="btn-reset"
+                    title="Reset the editor to a fresh circular Earth LEO. Clears maneuvers, perturbations, presets, and the canonical state.">Reset to LEO</button>
           </div>
-          <div id="editor-summary" class="section" style="font-family: ui-monospace, monospace; font-size: 10px;"></div>
+          <div id="editor-summary" class="section" style="font-family: ui-monospace, monospace; font-size: 10px;"
+               title="Post-propagation summary: sample count, peak |r|, total Δv, finite-burn count."></div>
         </aside>
       </main>
       <footer>
-        <span id="status">init…</span>
-        <button id="btn-cancel" title="Cancel running propagation">cancel</button>
-        <button id="btn-play" title="Play / pause mission animation"
+        <span id="status"
+              title="Status line. Shows the most recent action: propagation summary, streaming progress, validation messages, etc.">init…</span>
+        <button id="btn-cancel"
+                title="Cancel an in-flight streaming propagation. Partial results are kept; the trajectory shows what was computed before cancellation.">cancel</button>
+        <button id="btn-play"
+                title="Play / pause mission animation. Spacebar also toggles when focus isn't in a text field."
                 style="background:#061406;color:#80ff60;border:1px solid #2a602a;padding:2px 8px;border-radius:3px;cursor:pointer;font:11px ui-monospace,monospace;min-width:28px">▶</button>
-        <select id="play-speed" title="Playback rate (sim seconds per real second)"
+        <select id="play-speed"
+                title="Playback rate: simulation seconds per real second. ×1 = real-time; ×10k typically plays an Earth orbit in ~5 s, a cislunar mission in ~40 s."
                 style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
-          <option value="1">×1</option>
-          <option value="10">×10</option>
-          <option value="100">×100</option>
-          <option value="1000">×1k</option>
-          <option value="10000" selected>×10k</option>
-          <option value="100000">×100k</option>
-          <option value="1000000">×1M</option>
-          <option value="10000000">×10M</option>
+          <option value="1" title="Real-time playback. A 92-min LEO orbit takes 92 min to play.">×1</option>
+          <option value="10" title="10× real-time.">×10</option>
+          <option value="100" title="100× real-time. Good for LEO timescales.">×100</option>
+          <option value="1000" title="1 000× real-time. ~5 s per LEO orbit.">×1k</option>
+          <option value="10000" selected title="10 000× — default. A few seconds for a LEO, ~30 min for an interplanetary leg.">×10k</option>
+          <option value="100000" title="100 000× — cislunar timescale (multi-day → seconds).">×100k</option>
+          <option value="1000000" title="1 000 000× — multi-month → seconds.">×1M</option>
+          <option value="10000000" title="10 000 000× — interplanetary / multi-year.">×10M</option>
         </select>
-        <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
-        <span id="scrub-info"></span>
-        <label style="display:flex;align-items:center;gap:3px;font-size:10px">chart
-          <select id="chart-kind" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
-            <option value="alt">|r|</option>
-            <option value="speed">|v|</option>
-            <option value="energy">specific E</option>
+        <input id="scrub" type="range" min="0" max="0" value="0" step="1"
+               title="Scrub through the active trajectory. Past = solid line; future = dashed. Manually dragging this pauses any active playback." />
+        <span id="scrub-info"
+              title="Current scrub position: simulation time, |r|, |v|."></span>
+        <label style="display:flex;align-items:center;gap:3px;font-size:10px"
+               title="Footer chart series. |r| = radial distance; |v| = speed; specific E = orbital energy = v²/2 − μ/r (constant for Keplerian motion).">chart
+          <select id="chart-kind"
+                  title="Plotted quantity vs time across the active trajectory."
+                  style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
+            <option value="alt" title="|r| (magnitude of position vector) vs time.">|r|</option>
+            <option value="speed" title="|v| (speed) vs time. Conserved for two-body if no perturbations.">|v|</option>
+            <option value="energy" title="Specific orbital energy ε = v²/2 − μ/r vs time. Constant for Keplerian motion; drift = perturbation magnitude + integrator error.">specific E</option>
           </select>
         </label>
         <svg id="alt-chart" width="200" height="30" xmlns="http://www.w3.org/2000/svg"
+             title="Footer chart: time series of the selected quantity. The orange cursor tracks the scrub position."
              style="display:block;background:#020a02;border:1px solid #1a3a1a">
           <polyline id="alt-line" points="" fill="none" stroke="#80ff60" stroke-width="1" />
           <line id="alt-cursor" x1="0" y1="0" x2="0" y2="30" stroke="#ffba40" stroke-width="1" />
           <text id="alt-label" x="3" y="10" font-size="9" fill="#80ff60" font-family="ui-monospace,monospace"></text>
         </svg>
-        <label style="display:flex;align-items:center;gap:3px">cam
-          <select id="cam-target" style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
-            <option value="origin">central body</option>
-            <option value="craft">spacecraft</option>
-            <option value="moon">moon</option>
+        <label style="display:flex;align-items:center;gap:3px"
+               title="Where the orbit camera points. 'Central body' = origin (Earth/Moon); 'spacecraft' = current marker position; 'moon' = current Moon position from SPICE.">cam
+          <select id="cam-target"
+                  title="Camera target. Switching to 'spacecraft' follows the craft through its orbit."
+                  style="background:#020a02;color:#80ff60;border:1px solid #2a602a;font:11px ui-monospace,monospace">
+            <option value="origin" title="Camera looks at the central body (origin). Default.">central body</option>
+            <option value="craft" title="Camera follows the spacecraft marker. Use with 'recenter' (header).">spacecraft</option>
+            <option value="moon" title="Camera follows the Moon's current position. Only useful when third-body Moon is enabled.">moon</option>
           </select>
         </label>
       </footer>

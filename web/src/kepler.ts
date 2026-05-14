@@ -144,3 +144,46 @@ export function elementsToState(el: OrbitalElements, mu: number): { r: Vec3; v: 
 
 export const RAD = Math.PI / 180;
 export const DEG = 180 / Math.PI;
+
+// --------------------------------------------------------------------------- //
+//  ECEF (Earth-Centered Earth-Fixed) ↔ ECI (J2000) conversion.
+//
+//  ECEF is a rotating frame; its +x axis points to the prime meridian, so
+//  ECI → ECEF is a Z-axis rotation by the Greenwich angle θ_G, and the
+//  velocity picks up an extra −ω⊕ × r term because of the rotating frame.
+//
+//  Both operations are pure: they don't fetch the GMST; the caller passes it
+//  in (computed via `gmst.ts`).
+// --------------------------------------------------------------------------- //
+
+const EARTH_OMEGA: Vec3 = [0, 0, 7.2921158553e-5];   // rad/s, +Z
+
+function rotZ(v: Vec3, theta: number): Vec3 {
+  const c = Math.cos(theta), s = Math.sin(theta);
+  return [v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]];
+}
+
+function cross(a: Vec3, b: Vec3): Vec3 {
+  return [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]];
+}
+
+/** ECI (J2000) → ECEF.
+ *  r_ECEF = R_z(−θ_G) · r_ECI
+ *  v_ECEF = R_z(−θ_G) · v_ECI − ω⊕ × r_ECEF
+ */
+export function j2000ToEcef(r: Vec3, v: Vec3, gmst: number): { r: Vec3; v: Vec3 } {
+  const rE = rotZ(r, -gmst);
+  const vRot = rotZ(v, -gmst);
+  const wxr = cross(EARTH_OMEGA, rE);
+  return { r: rE, v: [vRot[0] - wxr[0], vRot[1] - wxr[1], vRot[2] - wxr[2]] };
+}
+
+/** ECEF → ECI (J2000).
+ *  r_ECI = R_z(θ_G) · r_ECEF
+ *  v_ECI = R_z(θ_G) · (v_ECEF + ω⊕ × r_ECEF)
+ */
+export function ecefToJ2000(r: Vec3, v: Vec3, gmst: number): { r: Vec3; v: Vec3 } {
+  const wxr = cross(EARTH_OMEGA, r);
+  const vRot: Vec3 = [v[0] + wxr[0], v[1] + wxr[1], v[2] + wxr[2]];
+  return { r: rotZ(r, gmst), v: rotZ(vRot, gmst) };
+}

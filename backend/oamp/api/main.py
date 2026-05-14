@@ -138,16 +138,27 @@ class Cr3bpPropagateRequest(BaseModel):
 
 
 class TransformStatesRequest(BaseModel):
-    """Batch frame transform.  `direction` is either 'to_synodic' or
-    'from_synodic'; `frame` is the target/source rotating frame.
+    """Batch frame transform.
+
+    Supported `frame` targets:
+      - **EM_SYNODIC**: Earth–Moon barycentric rotating, requires SPICE.
+      - **ECEF**: Earth-Centred Earth-Fixed, requires no SPICE; the Greenwich
+        angle is computed from `t_tdb + t_offsets_s[i]` via the constant-rate
+        GMST model shared with the front-end.
+
+    `direction` is `to_<frame>` or `from_<frame>` (legacy `to_synodic` /
+    `from_synodic` aliases are accepted for back-compat).
 
     `t_offsets_s`, if provided, must match the length of `states`: each state
     is transformed using ``t_tdb + t_offsets_s[i]``.  Without it, all states
     use the same `t_tdb` — a "frozen-frame" view.  The rotating-frame view
     that makes the Moon appear stationary needs per-state offsets."""
 
-    direction: Literal["to_synodic", "from_synodic"] = "to_synodic"
-    frame: Literal["EM_SYNODIC"] = "EM_SYNODIC"
+    direction: Literal[
+        "to_synodic", "from_synodic",
+        "to_ecef", "from_ecef",
+    ] = "to_synodic"
+    frame: Literal["EM_SYNODIC", "ECEF"] = "EM_SYNODIC"
     t_tdb: float
     t_offsets_s: list[float] | None = None
     states: list[tuple[float, float, float, float, float, float]]
@@ -578,13 +589,12 @@ async def cr3bp_propagate(req: Cr3bpPropagateRequest) -> dict:
 
 @app.post("/transform/states")
 async def transform_states(req: TransformStatesRequest) -> dict:
-    """Convert a batch of states between J2000 (Earth-centric) and the
-    Earth–Moon synodic frame at the given TDB epoch.  Requires SPICE."""
-    try:
-        from oamp.frames import em_synodic_to_inertial, inertial_to_em_synodic
-    except ImportError as e:
-        raise HTTPException(status_code=503, detail=f"frames unavailable: {e}") from e
+    """Convert a batch of states between J2000 (Earth-centric) and a rotating
+    frame at the given TDB epoch.
 
+    Supported frames: ``EM_SYNODIC`` (requires SPICE) and ``ECEF`` (no SPICE,
+    uses the constant-rate GMST model shared with the front-end).
+    """
     import numpy as np
 
     if req.t_offsets_s is not None and len(req.t_offsets_s) != len(req.states):
@@ -592,16 +602,28 @@ async def transform_states(req: TransformStatesRequest) -> dict:
             status_code=400,
             detail=f"t_offsets_s length {len(req.t_offsets_s)} != states {len(req.states)}",
         )
+
+    # Pick the transform pair based on the requested frame + direction.
+    inverse = req.direction in ("from_synodic", "from_ecef")
+    if req.frame == "EM_SYNODIC":
+        try:
+            from oamp.frames import em_synodic_to_inertial, inertial_to_em_synodic
+        except ImportError as e:
+            raise HTTPException(status_code=503, detail=f"frames unavailable: {e}") from e
+        fwd, inv = inertial_to_em_synodic, em_synodic_to_inertial
+    elif req.frame == "ECEF":
+        from oamp.frames import ecef_to_j2000, j2000_to_ecef
+        fwd, inv = j2000_to_ecef, ecef_to_j2000
+    else:
+        raise HTTPException(status_code=400, detail=f"unsupported frame: {req.frame}")
+
     out: list[list[float]] = []
     try:
         for i, s in enumerate(req.states):
             r = np.asarray(s[:3], dtype=float)
             v = np.asarray(s[3:], dtype=float)
             t_i = req.t_tdb + (req.t_offsets_s[i] if req.t_offsets_s else 0.0)
-            if req.direction == "to_synodic":
-                rr, vv = inertial_to_em_synodic(r, v, t_i)
-            else:
-                rr, vv = em_synodic_to_inertial(r, v, t_i)
+            rr, vv = (inv(r, v, t_i) if inverse else fwd(r, v, t_i))
             out.append([*rr.tolist(), *vv.tolist()])
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

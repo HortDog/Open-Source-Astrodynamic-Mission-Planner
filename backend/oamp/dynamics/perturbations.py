@@ -116,20 +116,45 @@ def _accel_jn(n: int, r: np.ndarray, mu: float, R: float, Jn: float) -> np.ndarr
 
 
 def zonal_harmonics(body: Body, n_max: int) -> Perturbation:
-    """Zonal harmonics J2..J{n_max}. n_max=2 for J2 only, n_max=6 for the full set."""
+    """Zonal harmonics J2..J{n_max}. n_max=2 for J2 only, n_max=6 for the full set.
+
+    `_accel_jn` is symmetric about the body's spin axis assuming it points
+    along +Z. When the body's actual pole differs from J2000 +Z (Moon, Sun,
+    planets), we rotate ``r`` into a pole-aligned frame, compute the
+    acceleration there, then rotate the result back. For Earth the rotation
+    is the identity and the cost is one matrix multiply per RHS evaluation.
+    """
     if n_max < 2:
         raise ValueError("n_max must be >= 2 (J2 minimum)")
     if n_max > 6:
         raise ValueError(f"zonal harmonics above J6 not implemented (got {n_max})")
     coeffs = body.jn[: n_max - 1]  # jn[0]=J2, jn[1]=J3, ...
 
-    def _accel(_t: float, r: np.ndarray, _v: np.ndarray) -> np.ndarray:
-        total = np.zeros(3)
-        for i, Jn in enumerate(coeffs):
-            if Jn == 0.0:
-                continue
-            total = total + _accel_jn(i + 2, r, body.mu, body.radius, Jn)
-        return total
+    # Build the pole-aligned rotation once at compose time.  Earth → identity;
+    # other bodies → genuine rotation. The closure captures both `R` and its
+    # transpose so the hot path is two `R @ v` calls plus the J_n math.
+    from oamp.frames import body_pole_alignment_rotation
+    R_to_body = body_pole_alignment_rotation(body)
+    is_identity = np.allclose(R_to_body, np.eye(3), atol=1e-14)
+    R_to_inertial = R_to_body.T
+
+    if is_identity:
+        def _accel(_t: float, r: np.ndarray, _v: np.ndarray) -> np.ndarray:
+            total = np.zeros(3)
+            for i, Jn in enumerate(coeffs):
+                if Jn == 0.0:
+                    continue
+                total = total + _accel_jn(i + 2, r, body.mu, body.radius, Jn)
+            return total
+    else:
+        def _accel(_t: float, r: np.ndarray, _v: np.ndarray) -> np.ndarray:
+            r_body = R_to_body @ r
+            total_body = np.zeros(3)
+            for i, Jn in enumerate(coeffs):
+                if Jn == 0.0:
+                    continue
+                total_body = total_body + _accel_jn(i + 2, r_body, body.mu, body.radius, Jn)
+            return R_to_inertial @ total_body
 
     return _accel
 

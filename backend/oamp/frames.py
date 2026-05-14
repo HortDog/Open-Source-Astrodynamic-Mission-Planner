@@ -26,6 +26,133 @@ class Frame(StrEnum):
 
     J2000_EARTH = "J2000_EARTH"   # inertial, Earth-centric (default)
     EM_SYNODIC = "EM_SYNODIC"     # Earth–Moon barycentric rotating (SI units)
+    ECEF = "ECEF"                 # Earth-centred Earth-fixed (rotates at ω⊕)
+
+
+# --------------------------------------------------------------------------- #
+#  Greenwich Mean Sidereal Time + ECEF ↔ J2000.
+#
+#  The constants and convention mirror the front-end `web/src/render/gmst.ts`
+#  so both sides compute the same θ_G for a given TDB epoch — important for
+#  round-tripping ECEF initial conditions submitted by the editor.
+# --------------------------------------------------------------------------- #
+
+EARTH_OMEGA_RAD_S: float = 7.2921158553e-5
+GMST_AT_J2000_RAD: float = 4.894961212823058
+
+EARTH_OMEGA_VEC: np.ndarray = np.array([0.0, 0.0, EARTH_OMEGA_RAD_S], dtype=float)
+
+
+def gmst_from_tdb(t_tdb_s: float) -> float:
+    """Greenwich Mean Sidereal Time in radians given TDB seconds since J2000.
+
+    Constant-rate model. Accuracy at the editor's zoom band is well sub-degree;
+    for sub-arcsecond geodesy use the IAU-2006/2000 series instead.
+    """
+    if not np.isfinite(t_tdb_s):
+        return 0.0
+    theta = GMST_AT_J2000_RAD + EARTH_OMEGA_RAD_S * float(t_tdb_s)
+    # Wrap into [0, 2π) to keep downstream math well-conditioned for long arcs.
+    return float(theta % (2.0 * np.pi))
+
+
+def _rot_z(theta: float) -> np.ndarray:
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+
+
+def j2000_to_ecef(
+    r_eci: np.ndarray,
+    v_eci: np.ndarray,
+    t_tdb: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rotate an inertial Earth-centric state into the Earth-fixed frame.
+
+        r_ECEF = R_z(−θ_G) · r_ECI
+        v_ECEF = R_z(−θ_G) · v_ECI − ω⊕ × r_ECEF
+    """
+    theta = gmst_from_tdb(t_tdb)
+    R = _rot_z(-theta)
+    r_ecef = R @ np.asarray(r_eci, dtype=float)
+    v_rot = R @ np.asarray(v_eci, dtype=float)
+    v_ecef = v_rot - np.cross(EARTH_OMEGA_VEC, r_ecef)
+    return r_ecef, v_ecef
+
+
+def ecef_to_j2000(
+    r_ecef: np.ndarray,
+    v_ecef: np.ndarray,
+    t_tdb: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Inverse of `j2000_to_ecef` — Earth-fixed state → inertial Earth-centric.
+
+        r_ECI = R_z(θ_G) · r_ECEF
+        v_ECI = R_z(θ_G) · (v_ECEF + ω⊕ × r_ECEF)
+    """
+    theta = gmst_from_tdb(t_tdb)
+    R = _rot_z(theta)
+    r = np.asarray(r_ecef, dtype=float)
+    v = np.asarray(v_ecef, dtype=float) + np.cross(EARTH_OMEGA_VEC, r)
+    return R @ r, R @ v
+
+
+# --------------------------------------------------------------------------- #
+#  Body-pole orientation in J2000.
+#
+#  Each non-Earth body (Moon, Sun, …) has a spin pole offset from J2000 +Z.
+#  Zonal harmonics J_n are symmetric about the *body's* spin axis, so a
+#  spacecraft propagated around the Moon needs r rotated into a pole-aligned
+#  frame before the J_n acceleration is evaluated. The helpers below build
+#  that rotation from `Body.pole_ra_j2000` / `Body.pole_dec_j2000`.
+#
+#  Earth's pole IS J2000 +Z by definition, so the rotation is the identity
+#  and the existing two-line `_accel_jn` produces the same result as before.
+# --------------------------------------------------------------------------- #
+
+
+def body_pole_in_j2000(body) -> np.ndarray:
+    """Unit vector along the body's spin axis in J2000 coordinates."""
+    a = float(body.pole_ra_j2000)
+    d = float(body.pole_dec_j2000)
+    return np.array(
+        [np.cos(d) * np.cos(a), np.cos(d) * np.sin(a), np.sin(d)],
+        dtype=float,
+    )
+
+
+def pole_alignment_rotation(pole_j2000: np.ndarray) -> np.ndarray:
+    """3×3 rotation that takes a J2000 vector into a frame where the body's
+    pole is along +Z. The inverse (transpose) maps back to J2000.
+
+    Rodrigues' formula. Identity when `pole_j2000` is already +Z.
+    """
+    p = np.asarray(pole_j2000, dtype=float)
+    p = p / np.linalg.norm(p)
+    z = np.array([0.0, 0.0, 1.0])
+    cos_a = float(np.dot(p, z))
+    if cos_a > 1.0 - 1e-15:
+        return np.eye(3)
+    if cos_a < -1.0 + 1e-15:
+        # Antiparallel: 180° flip about any axis perpendicular to z.
+        return np.diag([1.0, -1.0, -1.0])
+    axis = np.cross(p, z)
+    axis = axis / np.linalg.norm(axis)
+    sin_a = float(np.sqrt(max(0.0, 1.0 - cos_a * cos_a)))
+    K = np.array([
+        [0.0, -axis[2], axis[1]],
+        [axis[2], 0.0, -axis[0]],
+        [-axis[1], axis[0], 0.0],
+    ])
+    return np.eye(3) + sin_a * K + (1.0 - cos_a) * (K @ K)
+
+
+def body_pole_alignment_rotation(body) -> np.ndarray:
+    """Rotation that takes a J2000 vector into the body's pole-aligned frame.
+
+    Cached pattern: equivalent to ``pole_alignment_rotation(body_pole_in_j2000(body))``
+    but exposed as a single call for callers that don't need the pole vector.
+    """
+    return pole_alignment_rotation(body_pole_in_j2000(body))
 
 
 @dataclass(frozen=True, slots=True)

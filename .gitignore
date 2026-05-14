@@ -14,6 +14,11 @@ htmlcov/
 node_modules/
 dist/
 .vite/
+# tsc emit safety net — tsconfig has `noEmit: true` so these should never
+# appear, but if a misconfigured run produces them they shouldn't get
+# committed alongside the .ts sources.
+web/src/**/*.js
+web/tsconfig.tsbuildinfo
 
 # Editors / OS
 .vscode/
