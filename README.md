@@ -19,7 +19,7 @@ phosphor-styled WebGPU sandbox frontend. AGPLv3.
   - `src/kepler.ts`                 — Cartesian ↔ classical orbital elements
 - `data/kernels/` — SPICE kernels (DE440s + LSK + PCK). **Tracked in the repo so a fresh clone runs without network fetches.**
 - `web/public/data/` — Natural Earth 110m coastline GeoJSON. **Tracked in the repo.**
-- `docs/` — D2 architecture diagrams + LaTeX roadmap
+- `docs/` — LaTeX roadmap
 - `pixi.toml` — Python environment and tasks
 
 ## Quick start
@@ -28,7 +28,6 @@ phosphor-styled WebGPU sandbox frontend. AGPLv3.
 pixi install
 pixi run test           # backend tests (Newtonian, CR3BP, transfers, time scales)
 pixi run dev            # http://localhost:8000  (FastAPI + /docs)
-pixi run arch           # render docs/architecture.svg
 ```
 
 ```sh
