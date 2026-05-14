@@ -4,9 +4,6 @@ Interactive platform for space-mission design with high-fidelity Newtonian
 dynamics, SPICE ephemerides, low-energy / CR3BP transfer design, and a
 phosphor-styled WebGPU sandbox frontend. AGPLv3.
 
-See the [Project Brief](Open_Source_Astrodynamics_Mission_Planning.pdf) and
-[architecture diagram](docs/architecture.d2).
-
 ## Layout
 
 - `backend/` — Python package `oamp` (FastAPI + dynamics engines)
