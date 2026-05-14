@@ -99,7 +99,7 @@ way real spacecraft do.
 - "Navigate by stars" demo mode — close the loop with a star tracker driving
   an estimator that corrects an artificially noisy propagator
 
-See [docs/roadmap_phase_plan.tex](docs/roadmap_phase_plan.tex) for the full
+See [docs/roadmap_phase_plan.tex](docs/OAMP__Phase_Plan.pdf) for the full
 work breakdown.
 
 ## Future / stretch goals
